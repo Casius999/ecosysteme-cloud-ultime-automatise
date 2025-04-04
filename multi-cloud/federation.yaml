@@ -1,0 +1,486 @@
+# Configuration de la fédération multi-cloud
+# Ce fichier définit la configuration avancée pour l'orchestration multi-cloud
+
+kind: KubeFed
+apiVersion: core.kubefed.io/v1beta1
+metadata:
+  name: ultimate-federation
+  namespace: kube-federation-system
+spec:
+  controllerManager:
+    annotations:
+      integrity.federation.io/status: "VERIFIED"
+    featureGates:
+      PushReconciler: "Enabled"
+      SchedulerPreferences: "Enabled"
+      CrossClusterServiceDiscovery: "Enabled"
+      FederatedIngress: "Enabled"
+    clusterAvailableDelay: 20
+    clusterUnavailableDelay: 60
+  scope: Namespaced
+---
+kind: KubeFedCluster
+apiVersion: core.kubefed.io/v1beta1
+metadata:
+  name: gcp-cluster
+  namespace: kube-federation-system
+spec:
+  apiEndpoint: "https://gke-cluster.example.com"
+  caBundle: "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."
+  secretRef:
+    name: gcp-cluster-secret
+  disabledTLSValidations: []
+  proxyURL: ""
+  default: true
+---
+kind: KubeFedCluster
+apiVersion: core.kubefed.io/v1beta1
+metadata:
+  name: aws-cluster
+  namespace: kube-federation-system
+spec:
+  apiEndpoint: "https://eks-cluster.example.com"
+  caBundle: "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."
+  secretRef:
+    name: aws-cluster-secret
+  disabledTLSValidations: []
+  proxyURL: ""
+---
+kind: KubeFedCluster
+apiVersion: core.kubefed.io/v1beta1
+metadata:
+  name: azure-cluster
+  namespace: kube-federation-system
+spec:
+  apiEndpoint: "https://aks-cluster.example.com"
+  caBundle: "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."
+  secretRef:
+    name: azure-cluster-secret
+  disabledTLSValidations: []
+  proxyURL: ""
+---
+# Configuration des namespaces fédérés
+apiVersion: types.kubefed.io/v1beta1
+kind: FederatedNamespace
+metadata:
+  name: production
+  namespace: kube-federation-system
+spec:
+  placement:
+    clusters:
+    - name: gcp-cluster
+    - name: aws-cluster
+    - name: azure-cluster
+  template:
+    metadata:
+      labels:
+        environment: production
+        integrity: verified
+---
+# Configuration du déploiement fédéré pour l'application principale
+apiVersion: types.kubefed.io/v1beta1
+kind: FederatedDeployment
+metadata:
+  name: cloud-app
+  namespace: production
+spec:
+  template:
+    metadata:
+      labels:
+        app: cloud-app
+    spec:
+      replicas: 3
+      selector:
+        matchLabels:
+          app: cloud-app
+      template:
+        metadata:
+          labels:
+            app: cloud-app
+        spec:
+          containers:
+          - image: your-repo/cloud-app:latest
+            name: cloud-app
+            ports:
+            - containerPort: 8080
+            env:
+            - name: DEPLOYMENT_ENV
+              value: production
+            resources:
+              requests:
+                cpu: 500m
+                memory: 512Mi
+              limits:
+                cpu: 1000m
+                memory: 1Gi
+  placement:
+    clusters:
+    - name: gcp-cluster
+    - name: aws-cluster
+    - name: azure-cluster
+  overrides:
+  - clusterName: gcp-cluster
+    clusterOverrides:
+    - path: "/spec/replicas"
+      value: 5
+    - path: "/spec/template/spec/containers/0/resources/requests/cpu"
+      value: 1000m
+  - clusterName: aws-cluster
+    clusterOverrides:
+    - path: "/spec/replicas"
+      value: 3
+  - clusterName: azure-cluster
+    clusterOverrides:
+    - path: "/spec/replicas"
+      value: 2
+---
+# Configuration du service fédéré
+apiVersion: types.kubefed.io/v1beta1
+kind: FederatedService
+metadata:
+  name: cloud-app
+  namespace: production
+spec:
+  template:
+    metadata:
+      labels:
+        app: cloud-app
+    spec:
+      selector:
+        app: cloud-app
+      ports:
+      - name: http
+        port: 80
+        targetPort: 8080
+      type: ClusterIP
+  placement:
+    clusters:
+    - name: gcp-cluster
+    - name: aws-cluster
+    - name: azure-cluster
+---
+# Règles d'équilibrage de charge et de basculement multi-cloud
+apiVersion: multicluster.admiralty.io/v1alpha1
+kind: MultiClusterIngress
+metadata:
+  name: global-ingress
+  namespace: production
+spec:
+  template:
+    spec:
+      backend:
+        serviceName: cloud-app
+        servicePort: 80
+      rules:
+      - host: app.ultimate-ecosystem.com
+        http:
+          paths:
+          - path: /
+            backend:
+              serviceName: cloud-app
+              servicePort: 80
+  placement:
+    clusters:
+    - name: gcp-cluster
+    - name: aws-cluster
+    - name: azure-cluster
+---
+# Configuration de réplication des données entre clusters
+apiVersion: stork.libopenstorage.org/v1alpha1
+kind: ClusterPair
+metadata:
+  name: gcp-aws-pair
+  namespace: kube-federation-system
+spec:
+  options:
+    ip: eks-cluster.example.com
+    port: "443"
+    token: ""
+    tokenSecretName: aws-cluster-secret
+    tokenSecretNamespace: kube-federation-system
+---
+apiVersion: stork.libopenstorage.org/v1alpha1
+kind: ClusterPair
+metadata:
+  name: gcp-azure-pair
+  namespace: kube-federation-system
+spec:
+  options:
+    ip: aks-cluster.example.com
+    port: "443"
+    token: ""
+    tokenSecretName: azure-cluster-secret
+    tokenSecretNamespace: kube-federation-system
+---
+# Configuration de la réplication des données
+apiVersion: stork.libopenstorage.org/v1alpha1
+kind: Migration
+metadata:
+  name: db-migration
+  namespace: production
+spec:
+  clusterPair: gcp-aws-pair
+  includeResources:
+  - persistentvolumeclaims
+  - persistentvolumes
+  includeVolumes: true
+  startApplications: true
+  purgeDeletedResources: false
+  namespaces:
+  - production
+---
+# Politique d'auto-scaling multi-cloud
+apiVersion: mcsa.federated.io/v1
+kind: MultiClusterAutoScaler
+metadata:
+  name: global-autoscaler
+  namespace: kube-federation-system
+spec:
+  fedDeployment:
+    name: cloud-app
+    namespace: production
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      targetAverageUtilization: 70
+  minReplicas: 2
+  maxReplicas: 10
+  clusterStrategy:
+    priorityOrder:
+    - name: gcp-cluster
+      maxWeight: 0.6
+    - name: aws-cluster
+      maxWeight: 0.3
+    - name: azure-cluster
+      maxWeight: 0.1
+    overflowStrategy: Cascade
+    scalingAlgorithm: ProportionalDistribution
+---
+# Configuration de réplications des secrets entre clusters
+apiVersion: types.kubefed.io/v1beta1
+kind: FederatedSecret
+metadata:
+  name: api-keys
+  namespace: production
+spec:
+  template:
+    data:
+      # Ces valeurs doivent être remplacées par des valeurs réelles en production
+      # avec une référence à un gestionnaire de secrets externe
+      API_KEY: ${VAULT:secret/production/api_keys/main}
+  placement:
+    clusters:
+    - name: gcp-cluster
+    - name: aws-cluster
+    - name: azure-cluster
+---
+# Définition de la politique de basculement
+apiVersion: multicluster.admiralty.io/v1alpha1
+kind: FailoverPolicy
+metadata:
+  name: cloud-app-failover
+  namespace: production
+spec:
+  appSelector:
+    matchLabels:
+      app: cloud-app
+  prioritizedClusters:
+  - gcp-cluster
+  - aws-cluster
+  - azure-cluster
+  failoverThreshold: 30s  # Durée avant de considérer un cluster comme défaillant
+  recoveryThreshold: 60s  # Durée avant de considérer un cluster comme rétabli
+  healthCheckInterval: 10s  # Intervalle entre les vérifications de santé
+---
+# Définition de la stratégie d'affinité géographique
+apiVersion: multicluster.scheduling.io/v1
+kind: GeoPlacementPolicy
+metadata:
+  name: geo-affinity
+  namespace: production
+spec:
+  appSelector:
+    matchLabels:
+      app: cloud-app
+  regions:
+  - name: europe
+    clusters:
+    - name: gcp-cluster
+      affinity: 100
+    - name: aws-cluster
+      affinity: 80
+  - name: north-america
+    clusters:
+    - name: azure-cluster
+      affinity: 100
+  userAffinity:
+    enabled: true
+    cookieName: "geo_location"
+    headerName: "X-Geo-Location"
+---
+# Tableau de bord de surveillance multi-cloud
+apiVersion: multicluster.monitoring.io/v1
+kind: FederatedDashboard
+metadata:
+  name: multi-cloud-dashboard
+  namespace: kube-federation-system
+spec:
+  grafanaDashboard:
+    url: "https://grafana.ultimate-ecosystem.com"
+    folderName: "Multi-Cloud"
+    title: "Multi-Cloud Operations Overview"
+  datasources:
+  - name: gcp-prometheus
+    clusterName: gcp-cluster
+    type: prometheus
+    url: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  - name: aws-prometheus
+    clusterName: aws-cluster
+    type: prometheus
+    url: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  - name: azure-prometheus
+    clusterName: azure-cluster
+    type: prometheus
+    url: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+  metrics:
+  - name: cpu_usage
+    query: 'sum(rate(container_cpu_usage_seconds_total{namespace="production",pod=~"cloud-app.*"}[5m]))'
+    legend: "CPU Usage"
+  - name: memory_usage
+    query: 'sum(container_memory_usage_bytes{namespace="production",pod=~"cloud-app.*"})'
+    legend: "Memory Usage"
+  - name: network_traffic
+    query: 'sum(rate(container_network_receive_bytes_total{namespace="production",pod=~"cloud-app.*"}[5m]))'
+    legend: "Network Traffic"
+  aggregation:
+    method: SUM
+    byCluster: true
+    byNamespace: true
+---
+# Configuration de la politique de coûts multi-cloud
+apiVersion: multicluster.finops.io/v1
+kind: CostPolicy
+metadata:
+  name: cost-optimization
+  namespace: kube-federation-system
+spec:
+  optimizationStrategy: LowestCost
+  clusterCosts:
+  - name: gcp-cluster
+    provider: GCP
+    region: europe-west1
+    costPerCpuHour: 0.0350
+    costPerGbMemoryHour: 0.0047
+  - name: aws-cluster
+    provider: AWS
+    region: eu-west-1
+    costPerCpuHour: 0.0386
+    costPerGbMemoryHour: 0.0051
+  - name: azure-cluster
+    provider: Azure
+    region: westeurope
+    costPerCpuHour: 0.0370
+    costPerGbMemoryHour: 0.0049
+  thresholds:
+    dailyBudget: 100.0
+    monthlyBudget: 3000.0
+  notifications:
+    alertOnBudgetExceeded: true
+    alertThreshold: 0.8
+    emailRecipients:
+    - "finops-team@example.com"
+---
+# Configuration du service mesh fédéré
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: cloud-app-federated
+  namespace: production
+spec:
+  hosts:
+  - "cloud-app.production.svc.clusterset.local"
+  location: MESH_INTERNAL
+  ports:
+  - number: 80
+    name: http
+    protocol: HTTP
+  resolution: STATIC
+  endpoints:
+  - address: cloud-app.production.svc.cluster.gcp-cluster.local
+    locality: gcp/europe-west1/a
+    weight: 50
+    ports:
+      http: 80
+  - address: cloud-app.production.svc.cluster.aws-cluster.local
+    locality: aws/eu-west-1/b
+    weight: 30
+    ports:
+      http: 80
+  - address: cloud-app.production.svc.cluster.azure-cluster.local
+    locality: azure/westeurope/1
+    weight: 20
+    ports:
+      http: 80
+---
+# Configuration du système de synchronisation des configurations
+apiVersion: multicluster.config.io/v1
+kind: ConfigSync
+metadata:
+  name: global-config-sync
+  namespace: kube-federation-system
+spec:
+  sourceType: git
+  sourceConfig:
+    git:
+      repo: https://github.com/Casius999/ecosysteme-cloud-ultime-automatise.git
+      branch: main
+      dir: "config/common"
+      auth: ssh
+      secretRef:
+        name: git-creds
+  configurations:
+  - name: common-config
+    namespaceSelector:
+      matchLabels:
+        environment: production
+    resourceTypes:
+    - "ConfigMap"
+    - "Secret"
+    clusterOverrides:
+    - cluster: gcp-cluster
+      sourceDir: "config/gcp"
+    - cluster: aws-cluster
+      sourceDir: "config/aws"
+    - cluster: azure-cluster
+      sourceDir: "config/azure"
+---
+# Intégration avec le système d'intégrité systémique
+apiVersion: integrity.system.io/v1
+kind: FederatedIntegrityChecker
+metadata:
+  name: multi-cloud-integrity
+  namespace: kube-federation-system
+spec:
+  enabled: true
+  frequency: "*/30 * * * *"  # Toutes les 30 minutes
+  clusters:
+  - name: gcp-cluster
+  - name: aws-cluster
+  - name: azure-cluster
+  checks:
+  - name: data-integrity
+    type: cryptographic-hash
+    resourceTypes:
+    - "Secret"
+    - "ConfigMap"
+  - name: configuration-integrity
+    type: policy-validation
+    resourceTypes:
+    - "Deployment"
+    - "Service"
+  reporting:
+    storeResults: true
+    notifyOnFailure: true
+    recipients:
+    - "security-team@example.com"
