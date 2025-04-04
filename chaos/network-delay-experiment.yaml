@@ -1,0 +1,280 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-delay-chaos
+  namespace: chaos-testing
+  annotations:
+    experiment.chaos-mesh.org/description: "Test de résilience avec latence réseau - vérifie que le système reste opérationnel même avec une latence élevée"
+    integrity.chaos-mesh.org/type: "NON_FICTIONAL_TEST"
+spec:
+  action: delay
+  mode: one
+  selector:
+    namespaces:
+      - production
+    labelSelectors:
+      app: "cloud-app"
+  delay:
+    latency: "200ms"
+    correlation: "25"
+    jitter: "50ms"
+  scheduler:
+    cron: "@every 2h"
+  duration: "10m"
+  direction: both
+  target:
+    selector:
+      namespaces:
+        - production
+    mode: all
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: quantum-sim-network-partition-chaos
+  namespace: chaos-testing
+  annotations:
+    experiment.chaos-mesh.org/description: "Test d'isolation réseau du module quantique - vérifie que le système fonctionne correctement même si le module d'optimisation quantique est inaccessible"
+    integrity.chaos-mesh.org/type: "NON_FICTIONAL_TEST"
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - production
+    labelSelectors:
+      app: "quantum-sim"
+  scheduler:
+    cron: "@every 4h"
+  duration: "5m"
+  direction: both
+  target:
+    selector:
+      namespaces:
+        - production
+      labelSelectors:
+        app: "cloud-app"
+    mode: all
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: packet-loss-chaos
+  namespace: chaos-testing
+  annotations:
+    experiment.chaos-mesh.org/description: "Test avec perte de paquets réseau - simule un réseau instable et vérifie la robustesse du système"
+    integrity.chaos-mesh.org/type: "NON_FICTIONAL_TEST"
+spec:
+  action: loss
+  mode: one
+  selector:
+    namespaces:
+      - production
+    labelSelectors:
+      app: "cloud-app"
+  loss:
+    loss: "20"  # 20% de perte de paquets
+    correlation: "75"
+  scheduler:
+    cron: "@every 1d"  # Une fois par jour
+  duration: "15m"
+  direction: both
+---
+# Configuration du générateur de rapport d'expériences de chaos
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chaos-report-config
+  namespace: chaos-testing
+data:
+  report-template.md: |
+    # Rapport d'Expérience de Chaos
+    
+    ## Résumé
+    
+    - **Date**: {{ .Date }}
+    - **Type d'expérience**: {{ .Type }}
+    - **Durée**: {{ .Duration }}
+    - **Cible**: {{ .Target }}
+    
+    ## Résultats
+    
+    ### Statut des services
+    
+    | Service | Avant le chaos | Pendant le chaos | Après le chaos |
+    |---------|---------------|-----------------|----------------|
+    | Cloud App | {{ .StatusBefore.CloudApp }} | {{ .StatusDuring.CloudApp }} | {{ .StatusAfter.CloudApp }} |
+    | Fallback Agent | {{ .StatusBefore.FallbackAgent }} | {{ .StatusDuring.FallbackAgent }} | {{ .StatusAfter.FallbackAgent }} |
+    | Quantum Sim | {{ .StatusBefore.QuantumSim }} | {{ .StatusDuring.QuantumSim }} | {{ .StatusAfter.QuantumSim }} |
+    
+    ### Métriques
+    
+    | Métrique | Avant | Pendant | Après | Variation |
+    |----------|-------|---------|-------|-----------|
+    | Latence moyenne (ms) | {{ .Metrics.LatencyBefore }} | {{ .Metrics.LatencyDuring }} | {{ .Metrics.LatencyAfter }} | {{ .Metrics.LatencyChange }}% |
+    | Taux d'erreur (%) | {{ .Metrics.ErrorRateBefore }} | {{ .Metrics.ErrorRateDuring }} | {{ .Metrics.ErrorRateAfter }} | {{ .Metrics.ErrorRateChange }}% |
+    | Utilisation CPU (%) | {{ .Metrics.CpuBefore }} | {{ .Metrics.CpuDuring }} | {{ .Metrics.CpuAfter }} | {{ .Metrics.CpuChange }}% |
+    | Utilisation mémoire (%) | {{ .Metrics.MemoryBefore }} | {{ .Metrics.MemoryDuring }} | {{ .Metrics.MemoryAfter }} | {{ .Metrics.MemoryChange }}% |
+    
+    ## Analyse
+    
+    {{ .Analysis }}
+    
+    ## Actions recommandées
+    
+    {{ range .Recommendations }}
+    - {{ . }}
+    {{ end }}
+    
+    ## Verdict de conformité à la Charte d'Intégrité Systémique
+    
+    Cette expérience a {{ if .Compliance }}respecté{{ else }}violé{{ end }} les principes d'intégrité systémique.
+    
+    Détails: {{ .ComplianceDetails }}
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Schedule
+metadata:
+  name: comprehensive-chaos-schedule
+  namespace: chaos-testing
+spec:
+  schedule: "0 3 * * 0"  # Tous les dimanches à 3h du matin
+  historyLimit: 5
+  concurrencyPolicy: Forbid
+  type: "PodChaos"
+  podChaos:
+    action: pod-kill
+    mode: fixed-percent
+    value: "30"  # Tue 30% des pods
+    selector:
+      namespaces:
+        - production
+      labelSelectors:
+        app: "cloud-app"
+    gracePeriod: 10
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PhysicalMachineChaos
+metadata:
+  name: node-stress-test
+  namespace: chaos-testing
+  annotations:
+    experiment.chaos-mesh.org/description: "Test de stress des nœuds - vérifie que le système continue à fonctionner sous une charge élevée"
+    integrity.chaos-mesh.org/type: "NON_FICTIONAL_TEST"
+spec:
+  action: stress
+  address:
+    - node-1.internal:31767
+    - node-2.internal:31767
+  stress:
+    stressors:
+      cpu:
+        workers: 2
+        load: 50  # 50% de charge CPU
+      memory:
+        workers: 1
+        size: "512MB"  # Stress test avec 512MB
+  mode: one
+  selector:
+    nodes:
+      - node-1
+      - node-2
+  duration: "5m"
+  scheduler:
+    cron: "@every 12h"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  name: disk-latency-chaos
+  namespace: chaos-testing
+  annotations:
+    experiment.chaos-mesh.org/description: "Test de latence disque - vérifie que le système est résilient aux ralentissements d'I/O"
+    integrity.chaos-mesh.org/type: "NON_FICTIONAL_TEST"
+spec:
+  action: latency
+  mode: one
+  selector:
+    namespaces:
+      - production
+    labelSelectors:
+      app: "cloud-app"
+  volumePath: /data
+  path: "/data/**"
+  delay: "100ms"
+  methods:
+    - READ
+    - WRITE
+  percent: 50
+  duration: "10m"
+  scheduler:
+    cron: "@every 24h"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: DNSChaos
+metadata:
+  name: dns-error-chaos
+  namespace: chaos-testing
+  annotations:
+    experiment.chaos-mesh.org/description: "Test d'erreurs DNS - vérifie la robustesse du système face aux problèmes de résolution DNS"
+    integrity.chaos-mesh.org/type: "NON_FICTIONAL_TEST" 
+spec:
+  action: error
+  mode: one
+  selector:
+    namespaces:
+      - production
+    labelSelectors:
+      app: "cloud-app"
+  patterns:
+    - "*.cluster.local"
+  duration: "5m"
+  scheduler:
+    cron: "@every 48h"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chaos-notification-template
+  namespace: chaos-testing
+data:
+  slack-template.json: |
+    {
+      "blocks": [
+        {
+          "type": "header",
+          "text": {
+            "type": "plain_text",
+            "text": "Chaos Test Report: {{ .Name }}"
+          }
+        },
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*Status:* {{ if .Success }}✅ Passed{{ else }}❌ Failed{{ end }}\n*Duration:* {{ .Duration }}\n*Target:* {{ .Target }}"
+          }
+        },
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "{{ .Summary }}"
+          }
+        },
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*Key Metrics:*\n• Latency: {{ .Metrics.Latency }}\n• Error Rate: {{ .Metrics.ErrorRate }}\n• CPU: {{ .Metrics.CPU }}\n• Memory: {{ .Metrics.Memory }}"
+          }
+        },
+        {
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": "*Intégrité Systémique:* {{ if .ComplianceStatus }}✅ Conforme{{ else }}❌ Non Conforme{{ end }}"
+          }
+        }
+      ]
+    }
