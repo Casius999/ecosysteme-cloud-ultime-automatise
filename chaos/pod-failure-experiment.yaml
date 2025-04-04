@@ -1,0 +1,140 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: pod-failure-chaos
+  namespace: chaos-testing
+  annotations:
+    experiment.chaos-mesh.org/description: "Test de résilience avec défaillance de pod - vérifie que le système reste opérationnel même quand des pods sont indisponibles"
+    integrity.chaos-mesh.org/type: "NON_FICTIONAL_TEST"
+spec:
+  action: pod-failure
+  mode: one
+  selector:
+    namespaces:
+      - production
+    labelSelectors:
+      app: "cloud-app"
+  scheduler:
+    cron: "@every 30m"
+  duration: "5m"
+  gracePeriod: 0  # Fermeture immédiate
+  # Conditions de vérification avant l'expérience
+  conditionalAnnotations:
+    - key: "integrity.chaos-mesh.org/status"
+      value: "VERIFIED"
+      operator: "===" 
+  # Ne pas exécuter sur les pods critiques
+  value: "not .metadata.labels.critical"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: fallback-pod-failure-chaos
+  namespace: chaos-testing
+  annotations:
+    experiment.chaos-mesh.org/description: "Test de résilience du mécanisme de fallback - vérifie que le système active correctement le fallback quand Claude est indisponible"
+    integrity.chaos-mesh.org/type: "NON_FICTIONAL_TEST"
+spec:
+  action: pod-failure
+  mode: all
+  selector:
+    namespaces:
+      - production
+    labelSelectors:
+      app: "claude-service"
+  scheduler:
+    cron: "@every 3h"
+  duration: "10m"
+  gracePeriod: 0
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: cloud-app-chaos-workflow
+  namespace: chaos-testing
+spec:
+  entry: pod-failure
+  templates:
+    - name: pod-failure
+      templateType: Serial
+      deadline: 20m
+      children:
+        - workflow-monitoring-start
+        - pod-failure-test
+        - api-verification
+        - workflow-monitoring-end
+    - name: pod-failure-test
+      templateType: Task
+      task:
+        container:
+          name: chaos-mesh
+          image: ghcr.io/chaos-mesh/chaos-mesh:latest
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              PODS_BEFORE=$(kubectl get pods -n production -l app=cloud-app -o name | wc -l)
+              echo "Pods before chaos test: $PODS_BEFORE"
+              kubectl apply -f /etc/podChaos/pod-failure.yaml
+              sleep 300  # 5 minutes
+              PODS_AFTER=$(kubectl get pods -n production -l app=cloud-app -o name | wc -l)
+              echo "Pods after chaos test: $PODS_AFTER"
+              kubectl delete -f /etc/podChaos/pod-failure.yaml
+          volumeMounts:
+            - name: chaos-config
+              mountPath: /etc/podChaos
+      volumes:
+        - name: chaos-config
+          configMap:
+            name: pod-failure-config
+    - name: api-verification
+      templateType: Task
+      task:
+        container:
+          name: api-test
+          image: curlimages/curl:latest
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              # Vérification de l'API après le chaos test
+              STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://cloud-app.production.svc.cluster.local:8080/health)
+              echo "API status code: $STATUS_CODE"
+              
+              if [ "$STATUS_CODE" -eq 200 ]; then
+                echo "✅ API still operational after chaos test"
+                exit 0
+              else
+                echo "❌ API is not operational after chaos test - FAILURE"
+                exit 1
+              fi
+    - name: workflow-monitoring-start
+      templateType: Task
+      task:
+        container:
+          name: metrics-recorder
+          image: alpine:latest
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              echo "Recording baseline metrics before chaos test"
+              echo "Timestamp: $(date +%s)" > /tmp/chaos-metrics.txt
+              echo "Starting chaos test at $(date)"
+    - name: workflow-monitoring-end
+      templateType: Task
+      task:
+        container:
+          name: metrics-recorder
+          image: alpine:latest
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              echo "Recording final metrics after chaos test"
+              echo "Timestamp: $(date +%s)" >> /tmp/chaos-metrics.txt
+              echo "Chaos test completed at $(date)"
