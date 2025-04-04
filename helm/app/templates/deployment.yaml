@@ -1,0 +1,432 @@
+{{- if not .Values.blueGreen.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloud-app.fullname" . }}
+  labels:
+    {{- include "cloud-app.labels" . | nindent 4 }}
+    {{- if .Values.podLabels }}
+    {{- toYaml .Values.podLabels | nindent 4 }}
+    {{- end }}
+  annotations:
+    {{- if .Values.deploymentAnnotations }}
+    {{- toYaml .Values.deploymentAnnotations | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "cloud-app.selectorLabels" . | nindent 6 }}
+  strategy:
+    {{- if eq .Values.rollout.strategy "RollingUpdate" }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.rollout.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ .Values.rollout.rollingUpdate.maxSurge }}
+    {{- else }}
+    type: Recreate
+    {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "cloud-app.selectorLabels" . | nindent 8 }}
+        {{- if .Values.canary.enabled }}
+        variant: stable
+        {{- end }}
+      annotations:
+        {{- if .Values.podAnnotations }}
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+        {{- end }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cloud-app.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PROMETHEUS_PORT
+              value: "8000"
+            {{- if .Values.fallback.enabled }}
+            - name: FALLBACK_MODE
+              value: "auto"
+            - name: CLAUDE_ENDPOINT
+              value: "http://{{ .Values.fallback.targetService.name }}:{{ .Values.fallback.targetService.port }}"
+            {{- end }}
+            {{- if .Values.quantumOptimization.enabled }}
+            - name: QUANTUM_OPTIMIZATION_ENABLED
+              value: "true"
+            - name: OPTIMIZATION_RESOURCES
+              value: {{ .Values.quantumOptimization.resourceOptimization | ternary "true" "false" | quote }}
+            - name: OPTIMIZATION_WORKLOAD
+              value: {{ .Values.quantumOptimization.workloadBalancing | ternary "true" "false" | quote }}
+            - name: OPTIMIZATION_COST
+              value: {{ .Values.quantumOptimization.costOptimization | ternary "true" "false" | quote }}
+            {{- end }}
+            {{- if .Values.multiCloud.enabled }}
+            - name: MULTI_CLOUD_ENABLED
+              value: "true"
+            - name: CLOUD_PROVIDER_PRIMARY
+              value: {{ .Values.global.cloudProvider | quote }}
+            {{- if .Values.multiCloud.gcp.enabled }}
+            - name: GCP_PROJECT
+              value: {{ .Values.multiCloud.gcp.project | quote }}
+            - name: GCP_REGION
+              value: {{ .Values.multiCloud.gcp.region | quote }}
+            {{- end }}
+            {{- if .Values.multiCloud.aws.enabled }}
+            - name: AWS_REGION
+              value: {{ .Values.multiCloud.aws.region | quote }}
+            {{- end }}
+            {{- if .Values.multiCloud.azure.enabled }}
+            - name: AZURE_RESOURCE_GROUP
+              value: {{ .Values.multiCloud.azure.resourceGroup | quote }}
+            - name: AZURE_REGION
+              value: {{ .Values.multiCloud.azure.region | quote }}
+            {{- end }}
+            {{- end }}
+            {{- range $key, $value := .Values.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          envFrom:
+            {{- if .Values.extraEnvFrom }}
+            {{- toYaml .Values.extraEnvFrom | nindent 12 }}
+            {{- end }}
+          {{- if .Values.secrets.apiKeys.mounted }}
+          volumeMounts:
+            - name: api-keys
+              mountPath: {{ .Values.secrets.apiKeys.mountPath }}
+              readOnly: true
+            {{- if .Values.secrets.tlsCertificates.mounted }}
+            - name: tls-certificates
+              mountPath: {{ .Values.secrets.tlsCertificates.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: /app/data
+            {{- end }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.fallback.enabled }}
+        - name: fallback-sidecar
+          image: "{{ .Values.fallback.fallbackAgent.image }}"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
+            - name: FALLBACK_MODE
+              value: {{ if .Values.fallback.fallbackAgent.autoActivation }}auto{{ else }}manual{{ end }}
+            - name: MODEL_PREFERENCE
+              value: {{ .Values.fallback.fallbackAgent.modelPreference | quote }}
+            - name: CLAUDE_ENDPOINT
+              value: "http://{{ .Values.fallback.targetService.name }}:{{ .Values.fallback.targetService.port }}"
+            - name: PROMETHEUS_PORT
+              value: "8000"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        {{- if .Values.secrets.apiKeys.mounted }}
+        - name: api-keys
+          secret:
+            secretName: {{ .Values.secrets.apiKeys.name }}
+        {{- end }}
+        {{- if .Values.secrets.tlsCertificates.mounted }}
+        - name: tls-certificates
+          secret:
+            secretName: {{ .Values.secrets.tlsCertificates.name }}
+        {{- end }}
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "cloud-app.fullname" . }}-data
+        {{- end }}
+{{- end }}
+
+{{- if .Values.blueGreen.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloud-app.fullname" . }}-blue
+  labels:
+    {{- include "cloud-app.labels" . | nindent 4 }}
+    version: blue
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cloud-app.selectorLabels" . | nindent 6 }}
+      version: blue
+  template:
+    metadata:
+      labels:
+        {{- include "cloud-app.selectorLabels" . | nindent 8 }}
+        version: blue
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cloud-app.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
+            - name: DEPLOYMENT_COLOR
+              value: "blue"
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloud-app.fullname" . }}-green
+  labels:
+    {{- include "cloud-app.labels" . | nindent 4 }}
+    version: green
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cloud-app.selectorLabels" . | nindent 6 }}
+      version: green
+  template:
+    metadata:
+      labels:
+        {{- include "cloud-app.selectorLabels" . | nindent 8 }}
+        version: green
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cloud-app.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
+            - name: DEPLOYMENT_COLOR
+              value: "green"
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+
+{{- if .Values.canary.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloud-app.fullname" . }}-canary
+  labels:
+    {{- include "cloud-app.labels" . | nindent 4 }}
+    variant: canary
+spec:
+  replicas: {{ ceil (mul .Values.replicaCount (div .Values.canary.weight 100.0)) }}
+  selector:
+    matchLabels:
+      {{- include "cloud-app.selectorLabels" . | nindent 6 }}
+      variant: canary
+  template:
+    metadata:
+      labels:
+        {{- include "cloud-app.selectorLabels" . | nindent 8 }}
+        variant: canary
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cloud-app.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
+            - name: DEPLOYMENT_VARIANT
+              value: "canary"
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+
+{{- if .Values.shadow.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cloud-app.fullname" . }}-shadow
+  labels:
+    {{- include "cloud-app.labels" . | nindent 4 }}
+    variant: shadow
+spec:
+  replicas: {{ ceil (mul .Values.replicaCount (div .Values.shadow.replicaPercentage 100.0)) }}
+  selector:
+    matchLabels:
+      {{- include "cloud-app.selectorLabels" . | nindent 6 }}
+      variant: shadow
+  template:
+    metadata:
+      labels:
+        {{- include "cloud-app.selectorLabels" . | nindent 8 }}
+        variant: shadow
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cloud-app.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
+            - name: DEPLOYMENT_VARIANT
+              value: "shadow"
+            - name: SHADOW_MODE
+              value: "true"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
