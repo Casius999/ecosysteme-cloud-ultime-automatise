@@ -1,0 +1,141 @@
+# Configuration du module d'optimisation quantique
+# Écosystème cloud automatisé - Version: 1.0.0
+
+# Paramètres généraux
+general:
+  # Intervalle d'exécution des simulations en mode continu (secondes)
+  execution_interval: 300
+  # Répertoire pour stocker les résultats
+  results_dir: "/app/results"
+  # Mode d'exécution (continuous, on-demand)
+  execution_mode: "continuous"
+  # Connexion à la base de données pour enregistrer les résultats
+  database:
+    type: "prometheus"
+    host: "prometheus-service.monitoring"
+    port: 9090
+
+# Configuration des backends Qiskit
+qiskit:
+  # Backend par défaut
+  default_backend: "aer_simulator"
+  # Nombre d'échantillons (shots) pour les exécutions
+  shots: 1024
+  # Graine aléatoire pour la reproductibilité
+  random_seed: 42
+  # Utiliser l'accélération GPU si disponible
+  use_gpu: true
+  # Options avancées du simulateur
+  simulator_options:
+    method: "statevector"
+    device: "CPU"
+    precision: "double"
+
+# Paramètres d'optimisation
+optimization:
+  # Nombre d'itérations pour les algorithmes d'optimisation
+  max_iterations: 1000
+  # Tolérance pour la convergence
+  tol: 1.0e-6
+  # Types d'optimisations à exécuter
+  enabled_types:
+    - "resource_optimization"
+    - "workload_balancing"
+    - "cost_optimization"
+  # Paramètres par défaut pour l'optimisation des ressources
+  resource_optimization:
+    nodes: 5
+    cpus: 8
+    memory: 32
+  # Paramètres par défaut pour l'équilibrage de charge
+  workload_balancing:
+    num_services: 10
+    num_nodes: 3
+  # Paramètres par défaut pour l'optimisation des coûts
+  cost_optimization:
+    num_regions: 4
+    num_instance_types: 5
+
+# Intégration avec les autres systèmes de l'écosystème cloud
+integrations:
+  # Intégration avec Kubernetes
+  kubernetes:
+    enabled: true
+    namespace: "production"
+    config_map: "quantum-optimizer-config"
+    secret: "quantum-optimizer-secret"
+  # Intégration avec le système de monitoring
+  monitoring:
+    prometheus:
+      enabled: true
+      metrics_port: 8000
+      push_gateway: "prometheus-pushgateway.monitoring:9091"
+    grafana:
+      enabled: true
+      dashboard_uid: "quantum-optimization"
+  # Intégration avec le système de logging
+  logging:
+    elasticsearch:
+      enabled: true
+      host: "elasticsearch-service.logging"
+      port: 9200
+      index_prefix: "quantum-sim"
+    loki:
+      enabled: true
+      url: "http://loki-service.logging:3100/loki/api/v1/push"
+  # Intégration avec le mécanisme de fallback
+  fallback:
+    enabled: true
+    endpoint: "http://fallback-service:8080/api/optimize"
+    timeout: 30
+
+# Contraintes et règles pour les optimisations
+constraints:
+  # Règles pour éviter les optimisations fictives
+  non_fiction_rules:
+    - "Toutes les simulations doivent être basées sur des données réelles du cluster"
+    - "Les résultats doivent être appliqués à des ressources existantes"
+    - "Les optimisations doivent avoir un effet mesurable sur le système"
+  # Contraintes spécifiques pour chaque type d'optimisation
+  resource_optimization:
+    max_cpu_utilization: 0.85
+    max_memory_utilization: 0.8
+    min_node_count: 2
+  workload_balancing:
+    max_imbalance: 0.2
+    min_service_availability: 0.99
+  cost_optimization:
+    max_cost_increase: 0.0
+    min_performance_ratio: 0.95
+
+# Configuration du serveur d'API intégré
+api:
+  enabled: true
+  port: 8080
+  endpoints:
+    - path: "/optimize"
+      method: "POST"
+      description: "Lancer une optimisation à la demande"
+    - path: "/status"
+      method: "GET"
+      description: "Obtenir le statut du service"
+    - path: "/results"
+      method: "GET"
+      description: "Récupérer les résultats des optimisations"
+  security:
+    auth_enabled: true
+    auth_type: "bearer"
+    token_secret_name: "quantum-api-tokens"
+
+# Paramètres de performance et de ressources
+resources:
+  cpu:
+    request: "500m"
+    limit: "2"
+  memory:
+    request: "1Gi"
+    limit: "4Gi"
+  gpu:
+    enabled: false
+    type: "nvidia-tesla-t4"
+    count: 1
