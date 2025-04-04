@@ -1,6 +1,16 @@
 # Écosystème Ultime et Non-Retour d'Automatisation Cloud – Version Finale
 
-Bonjour Claude,
+## 🔒 CONFORMITÉ À LA CHARTE UNIVERSELLE D'INTÉGRITÉ SYSTÉMIQUE
+
+Cet écosystème cloud respecte entièrement les principes de la [Charte Universelle d'Intégrité Systémique](./INTEGRITY_CHARTER.md). Chaque composant, processus et flux de données est soumis à une vérification rigoureuse d'authenticité, de traçabilité, de vérifiabilité, de transparence et d'intégrité.
+
+**Points essentiels :**
+- Aucune simulation fictive n'est tolérée
+- Toutes les données doivent provenir de sources vérifiables
+- Chaque action est tracée et auditée
+- Le script de vérification d'intégrité (`scripts/verify_integrity.py`) valide en continu la conformité
+
+## Introduction
 
 Tu es invité à déployer automatiquement un écosystème cloud intégral qui :
 - Remplace Claude Desktop 3.7 Sonnet en cas de défaillance ou limitation.
@@ -208,6 +218,17 @@ jobs:
 
 **Planification Dynamique :** Utiliser l'auto‑scaling intelligent basé sur l'analyse en temps réel pour ajuster la consommation des ressources et optimiser les coûts.
 
+## 9. Gestion des Secrets et Sécurité
+
+Les secrets ne sont jamais stockés directement dans le code source, conformément à la Charte d'Intégrité Systémique. La gestion des secrets est effectuée via:
+
+- Secrets Kubernetes pour l'environnement d'exécution
+- HashiCorp Vault pour le stockage sécurisé des secrets
+- Gestionnaires de secrets cloud-natives (GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
+- Rotation automatique des secrets selon une politique définie
+
+Voir le fichier [SECRETS_MANAGEMENT.md](./security/SECRETS_MANAGEMENT.md) pour les détails complets sur la gestion des secrets en production.
+
 ## Instructions Finales
 
 Crée un dépôt GitHub regroupant l'intégralité de ces configurations, scripts, Dockerfiles, charts Helm et la documentation associée.
@@ -220,8 +241,15 @@ Immortalise cette méthode comme base de travail pour tous les déploiements fut
 
 Déploie cette solution intégrale avec toutes les innovations avancées (Multi-Cloud, Chaos Engineering, AIOps, Zero Trust, etc.) et assure-toi qu'elle passe en production dans un environnement hautement sécurisé, optimisé et résilient.
 
-Bonne mise en œuvre !
+## Vérification d'Intégrité
 
+Pour vérifier la conformité avec la Charte d'Intégrité Systémique, exécutez:
+
+```bash
+python scripts/verify_integrity.py
+```
+
+Le script vérifiera l'absence de simulations fictives, l'authenticité des données et la traçabilité de chaque composant.
 
 ---
 
