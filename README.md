@@ -22,7 +22,30 @@ Tu es invité à déployer automatiquement un écosystème cloud intégral qui :
 - Intègre un système de fallback intelligent et des modules AIOps pour la maintenance prédictive et la gouvernance en mode Zero Trust.
 - Permet un suivi financier en temps réel (FinOps) pour optimiser les crédits et coûts cloud.
 
-Ce prompt doit être immortalisé dans un dépôt GitHub servant de base de travail. Le dépôt intégrera l'ensemble des fichiers de configuration, scripts, Dockerfiles, charts Helm et une documentation complète.
+## ✅ DÉPLOIEMENT SIMPLIFIÉ
+
+Pour faciliter le déploiement de l'écosystème, nous avons ajouté des scripts et outils spécifiques :
+
+1. **Configuration centralisée** : 
+   - Utilisez le fichier [`config/credentials.yaml`](./config/credentials.yaml) pour configurer tous vos identifiants
+   - Renseignez vos clés API pour AWS, GCP, Azure, ainsi que les clés pour les LLMs de fallback
+
+2. **Déploiement automatisé** :
+   - Script principal : [`scripts/deploy_infrastructure.sh`](./scripts/deploy_infrastructure.sh)
+   - Vérification d'intégrité : [`scripts/verify_config_integrity.py`](./scripts/verify_config_integrity.py)
+   - Tous les détails dans le [Guide de Déploiement](./DEPLOYMENT.md)
+
+3. **Documentation améliorée** :
+   - Consultez le [Guide de Déploiement](./DEPLOYMENT.md) pour les instructions détaillées
+   - Toutes les étapes respectent la Charte d'Intégrité Systémique
+
+Pour un déploiement rapide, suivez simplement ces étapes :
+```bash
+# 1. Configurez vos identifiants dans config/credentials.yaml
+# 2. Exécutez le script de déploiement
+chmod +x scripts/deploy_infrastructure.sh
+./scripts/deploy_infrastructure.sh
+```
 
 ## Table des matières
 
@@ -215,62 +238,30 @@ gh workflow run integrity-check.yml
 
 ## Installation et Déploiement
 
-Pour déployer l'écosystème complet, suivez ces étapes:
+Pour déployer l'écosystème complet, deux options s'offrent à vous:
 
-1. **Provisionnement de l'infrastructure:**
+### Option 1 : Déploiement Automatisé (Recommandé)
+
+1. **Configurez vos identifiants** :
    ```bash
-   cd terraform
-   terraform init
-   terraform apply
+   # Éditez le fichier de configuration avec vos identifiants
+   vi config/credentials.yaml
    ```
 
-2. **Configuration des secrets pour la production:**
+2. **Exécutez le script de déploiement automatisé** :
    ```bash
-   # Mettez en place HashiCorp Vault
-   helm repo add hashicorp https://helm.releases.hashicorp.com
-   helm install vault hashicorp/vault -f security/vault-values.yaml
-   
-   # Intégration avec les gestionnaires de secrets cloud-natives
-   ./scripts/setup_cloud_secrets.sh
+   chmod +x scripts/deploy_infrastructure.sh
+   ./scripts/deploy_infrastructure.sh
    ```
 
-3. **Déploiement des composants principaux:**
-   ```bash
-   # Déploiement d'Istio pour Zero Trust
-   kubectl apply -f security/istio/zero-trust-config.yaml
-   
-   # Déploiement des outils de monitoring
-   helm install prometheus prometheus-community/prometheus -f monitoring/prometheus-values.yaml
-   helm install grafana grafana/grafana -f monitoring/grafana-values.yaml
-   
-   # Déploiement des outils FinOps
-   helm install kubecost kubecost/cost-analyzer -f finops/kubecost-values.yaml
-   
-   # Configuration du Chaos Engineering
-   kubectl apply -f chaos/pod-failure-experiment.yaml
-   kubectl apply -f chaos/network-delay-experiment.yaml
-   
-   # Déploiement de l'application principale
-   helm install cloud-app ./helm/app -f helm/app/values.yaml
-   
-   # Déploiement du module quantique
-   helm install quantum-sim ./helm/quantum-sim -f helm/quantum-sim/values.yaml
-   
-   # Déploiement de l'agent de fallback
-   helm install fallback-agent ./helm/fallback-agent -f helm/fallback-agent/values.yaml
-   ```
-
-4. **Configuration de la fédération multi-cloud:**
-   ```bash
-   # Installation de KubeFed
-   kubectl apply -f multi-cloud/federation.yaml
-   ```
-
-5. **Vérification de l'intégrité après déploiement:**
+3. **Vérifiez l'intégrité après déploiement** :
    ```bash
    python scripts/verify_integrity.py
-   ./scripts/verify_secrets_compliance.sh
    ```
+
+### Option 2 : Déploiement Manuel (Étape par étape)
+
+Voir le [Guide de Déploiement](./DEPLOYMENT.md) pour les instructions détaillées du déploiement manuel.
 
 ## Instructions Finales
 
@@ -287,7 +278,7 @@ Cet écosystème cloud représente une implémentation complète et conforme à 
 - Les simulations quantiques via Qiskit AER sont activées et exécutées en continu en production pour optimiser les paramètres et algorithmes.
 - Seules les simulations visant à rendre fictifs des composants ou actions non réels sont strictement interdites.
 
-Déploie cette solution intégrale avec toutes les innovations avancées (Multi-Cloud, Chaos Engineering, AIOps, Zero Trust, etc.) et assure-toi qu'elle passe en production dans un environnement hautement sécurisé, optimisé et résilient.
+Déployez cette solution intégrale avec toutes les innovations avancées (Multi-Cloud, Chaos Engineering, AIOps, Zero Trust, etc.) et assurez-vous qu'elle passe en production dans un environnement hautement sécurisé, optimisé et résilient.
 
 ---
 
