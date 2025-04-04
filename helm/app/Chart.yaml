@@ -1,0 +1,35 @@
+apiVersion: v2
+name: cloud-app
+description: Application principale pour l'écosystème cloud automatisé
+
+# Version du chart
+version: 0.1.0
+
+# Version de l'application
+appVersion: "1.0.0"
+
+# Type de chart
+type: application
+
+# Mots-clés décrivant l'application
+keywords:
+  - cloud
+  - automation
+  - multi-cloud
+  - high-availability
+
+# Maintainers
+maintainers:
+  - name: Cloud Automation Team
+    email: cloud-automation@example.com
+
+# Dépendances
+dependencies:
+  - name: prometheus
+    version: "~15.0.0"
+    repository: "https://prometheus-community.github.io/helm-charts"
+    condition: prometheus.enabled
+  - name: grafana
+    version: "~6.0.0"
+    repository: "https://grafana.github.io/helm-charts"
+    condition: grafana.enabled
