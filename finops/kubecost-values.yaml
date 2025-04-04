@@ -1,0 +1,170 @@
+# Configuration Kubecost pour l'optimisation des coûts cloud
+# Documentation: https://github.com/kubecost/cost-analyzer-helm-chart
+
+global:
+  prometheus:
+    enabled: false  # Utilise la stack Prometheus existante
+    fqdn: http://prometheus-server.monitoring.svc.cluster.local:9090
+
+kubecostProductConfigs:
+  clusterName: "ultimate-ecosystem"
+
+  # Multi-cloud integration
+  cloudIntegration:
+    enabled: true
+    google:
+      enabled: true
+      serviceKeySecretName: "google-service-key"
+      serviceKeySecretKey: "service-account.json"
+    aws:
+      enabled: true
+      secretName: "aws-cost-key"
+      secretAccessKey: "aws-secret-access-key"
+      accessKeyID: "aws-access-key-id"
+    azure:
+      enabled: true
+      secretName: "azure-sp-key"
+      clientId: "client-id"
+      clientPassword: "client-password"
+      tenantId: "tenant-id"
+      subscriptionId: "subscription-id"
+
+  # Alertes de coûts
+  alertConfigs:
+    enabled: true
+    frontendUrl: "https://kubecost.ultimate-ecosystem.com"
+    globalSlackWebhookUrl: "https://hooks.slack.com/services/YOUR_SLACK_KEY"
+    alerts:
+      - type: budget  # Alerte de dépassement de budget
+        threshold: 1.0  # 100% du budget
+        window: daily
+        aggregation: namespace
+        filter: namespace=production
+        ownerContact: "cloud-finops@example.com"
+      - type: efficiency  # Alerte d'inefficacité des ressources
+        threshold: 0.5  # Moins de 50% d'utilisation
+        window: weekly
+        aggregation: container
+        filter: ""
+        ownerContact: "cloud-finops@example.com"
+
+  # Paramètres d'allocation des coûts
+  savings:
+    enabled: true
+    spotLabel: "cloud.google.com/gke-spot"
+    spotLabelValue: "true"
+    priorityClassNames:
+      - low-priority
+      - medium-priority
+      - high-priority
+
+  # Optimisation des recommandations
+  resourceRecommendationsConfigs:
+    enabled: true
+    dataHoursBackfill: 720  # 30 jours
+    requestPodPercentile: 0.9  # 90ème percentile pour le dimensionnement
+
+  # Intégration à la simulation quantique
+  externalCostCalculation:
+    enabled: true
+    customEndpoint: "http://quantum-sim-service.quantum.svc.cluster.local:8080/predict-cost"
+
+# Configuration de l'interface utilisateur
+networkCosts:
+  enabled: true
+  promCost:
+    enabled: true
+    
+interface:
+  showSharedNamespaces: true
+  showNamespaceSelection: true
+  enableUiPersistence: true
+  bannerMode: warning  # alerte sur les coûts élevés
+
+# Backend
+store:
+  remoteWriteEnabled: true
+  persistentVolume:
+    enabled: true
+    size: 50Gi
+
+# Intégration avec le modèle d'intégrité systémique
+annotations:
+  integrity: "VERIFIED"
+  dataAuthenticity: "TRACEABLE"
+  simulationType: "REAL_DATA_ONLY"
+
+# Exportation des métriques pour les dashboards
+prometheus:
+  serviceMonitor:
+    enabled: true
+  extraScrapeConfigs: |
+    - job_name: 'kubecost'
+      scrape_interval: 1m
+      scrape_timeout: 10s
+      metrics_path: /metrics
+      scheme: http
+      static_configs:
+        - targets:
+          - kubecost-cost-analyzer.kubecost:9003
+
+# Configuration RBAC
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: "arn:aws:iam::123456789012:role/KubecostCostAnalyzer"
+    iam.gke.io/gcp-service-account: "kubecost@project-id.iam.gserviceaccount.com"
+
+# Intégration avec le chargeback départemental
+productConfigs:
+  productKey:
+    secretname: "kubecost-product-key"
+    existingSecret: true
+  reporting:
+    project: true
+    namespace: true
+    controller: true
+    label:
+      enabled: true
+      key: "department"
+      value: "team"
+
+# Révision périodique des budgets
+prometheus-node-exporter:
+  enabled: true
+  hostRootFsMount:
+    enabled: true
+
+# Configuration grafana
+grafana:
+  sidecar:
+    dashboards:
+      enabled: true
+    datasources:
+      enabled: true
+
+# Cycle de vie des données
+persistentVolume:
+  size: "100Gi"
+  storageClass: "standard"
+
+# Rapports automatisés
+notifications:
+  enabled: true
+  slackConfigs:
+    - name: "Weekly-Cost-Report"
+      type: slack
+      value: "https://hooks.slack.com/services/YOUR_SLACK_KEY"
+      channel: "cloud-costs"
+      title: "Weekly Cost Report"
+      daily: false
+      weekly: true
+      token: "SLACK_TOKEN"
+  emailConfigs:
+    - name: "Monthly-Cost-Report"
+      type: email
+      value: "finops-team@example.com"
+      title: "Monthly Cost Report"
+      daily: false
+      weekly: false
+      monthly: true
