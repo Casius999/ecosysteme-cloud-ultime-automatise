@@ -1,0 +1,435 @@
+# Configuration Zero Trust avec Istio
+# Ce fichier définit les politiques de sécurité pour l'approche Zero Trust
+
+# Installation d'Istio avec mTLS strict
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: istio-control-plane
+  namespace: istio-system
+spec:
+  profile: default
+  components:
+    egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+    ingressGateways:
+    - name: istio-ingressgateway
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+        service:
+          type: LoadBalancer
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+          metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              targetAverageUtilization: 80
+    pilot:
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2048Mi
+          limits:
+            cpu: 1000m
+            memory: 4096Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+          metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              targetAverageUtilization: 80
+  meshConfig:
+    accessLogFile: /dev/stdout
+    enableTracing: true
+    defaultConfig:
+      tracing:
+        sampling: 100
+        zipkin:
+          address: zipkin.istio-system:9411
+    outboundTrafficPolicy:
+      mode: REGISTRY_ONLY  # Bloque tout trafic sortant sauf celui qui est explicitement autorisé
+    enableAutoMtls: true
+  values:
+    global:
+      pilotCertProvider: istiod
+      controlPlaneSecurityEnabled: true
+      disablePolicyChecks: false
+      imagePullPolicy: Always
+      proxy:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        concurrency: 2
+        accessLogFile: "/dev/stdout"
+      tracer:
+        zipkin:
+          address: "zipkin.istio-system:9411"
+      mtls:
+        auto: true
+        enabled: true
+---
+# Politique mTLS par défaut: STRICT (communication chiffrée obligatoire)
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+---
+# Politique pour les espaces de noms
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: production-strict-mtls
+  namespace: production
+spec:
+  mtls:
+    mode: STRICT
+  selector:
+    matchLabels:
+      app: cloud-app
+---
+# Política d'autorisation pour les services - Zero Trust
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: cloud-app-policy
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: cloud-app
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/production/sa/cloud-app-service-account"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/api/*"]
+---
+# Politique d'autorisation pour l'agent de fallback
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: fallback-agent-policy
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: fallback-agent
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/production/sa/cloud-app-service-account"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/api/*"]
+---
+# Politique d'autorisation pour le module quantique
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: quantum-sim-policy
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: quantum-sim
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/production/sa/cloud-app-service-account"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/api/*"]
+---
+# Configuration de l'intégration avec Open Policy Agent (OPA)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-policy
+  namespace: istio-system
+data:
+  policy.rego: |
+    package istio.authz
+    
+    default allow = false
+    
+    # Allow access if the request has a valid JWT token with the right claims
+    allow {
+      valid_token
+      authorized_role
+    }
+    
+    valid_token {
+      [_, encoded_payload, _] := io.jwt.decode(input.attributes.request.http.headers["Authorization"])
+      not is_expired(encoded_payload)
+    }
+    
+    is_expired(payload) {
+      now := time.now_ns() / 1000000000
+      payload.exp < now
+    }
+    
+    authorized_role {
+      required_roles := {
+        "/api/v1/admin": ["admin"],
+        "/api/v1/user": ["user", "admin"],
+        "/api/v1/public": ["*"]
+      }
+      
+      path := input.attributes.request.http.path
+      roles := required_roles[path]
+      jwt_roles := input.attributes.request.http.headers.jwt_claims.roles
+      
+      some i, j
+      roles[i] == "*" or jwt_roles[j] == roles[i]
+    }
+---
+# Service Entry pour permettre l'accès aux APIs externes
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: anthropic-api
+  namespace: production
+spec:
+  hosts:
+  - "api.anthropic.com"
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  resolution: DNS
+  location: MESH_EXTERNAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: openai-api
+  namespace: production
+spec:
+  hosts:
+  - "api.openai.com"
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  resolution: DNS
+  location: MESH_EXTERNAL
+---
+# Configuration du Gateway
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: cloud-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - "*"
+    tls:
+      mode: SIMPLE
+      credentialName: cloud-app-cert
+---
+# Virtual Service pour la routing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: cloud-app
+  namespace: production
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - cloud-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/api"
+    route:
+    - destination:
+        host: cloud-app
+        port:
+          number: 8080
+  - match:
+    - uri:
+        prefix: "/fallback"
+    route:
+    - destination:
+        host: fallback-agent
+        port:
+          number: 8080
+  - match:
+    - uri:
+        prefix: "/quantum"
+    route:
+    - destination:
+        host: quantum-sim
+        port:
+          number: 8080
+---
+# Configuration des politiques de résilience
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: cloud-app
+  namespace: production
+spec:
+  host: cloud-app
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 1
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+# Politique Circuit Breaker pour l'agent de fallback
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: fallback-agent
+  namespace: production
+spec:
+  host: fallback-agent
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 1
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 100
+---
+# Configuration de la surveillance de sécurité (détection d'anomalies)
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-authentication
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: cloud-app
+  jwtRules:
+  - issuer: "https://auth.ultimate-ecosystem.com"
+    jwksUri: "https://auth.ultimate-ecosystem.com/.well-known/jwks.json"
+    audiences:
+    - "cloud-api"
+    forwardOriginalToken: true
+    outputPayloadToHeader: "jwt_claims"
+---
+# Intégration avec Kiali pour l'observabilité
+apiVersion: kiali.io/v1alpha1
+kind: Kiali
+metadata:
+  name: kiali
+  namespace: istio-system
+spec:
+  auth:
+    strategy: token
+  deployment:
+    accessible_namespaces:
+    - "**"
+  server:
+    web_root: /kiali
+  external_services:
+    istio:
+      url_service_version: http://istiod.istio-system:8080/version
+    tracing:
+      enabled: true
+      in_cluster_url: http://jaeger-query.istio-system:16686
+    prometheus:
+      url: http://prometheus-server.monitoring:9090
+---
+# Configuration du sidecar pour limiter la portée 
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: default
+  namespace: production
+spec:
+  egress:
+  - hosts:
+    - "istio-system/*"
+    - "production/*"
+    - "monitoring/*"
+---
+# Configuration RBAC pour Kubernetes
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloud-app-role
+  namespace: production
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloud-app-rolebinding
+  namespace: production
+subjects:
+- kind: ServiceAccount
+  name: cloud-app-service-account
+  namespace: production
+roleRef:
+  kind: Role
+  name: cloud-app-role
+  apiGroup: rbac.authorization.k8s.io
