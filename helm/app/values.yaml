@@ -1,0 +1,284 @@
+# Valeurs par défaut pour le chart cloud-app
+# Ce fichier contient les valeurs par défaut pour le déploiement
+# avec des réglages pour les options Canary et Blue/Green
+
+# Configuration globale
+global:
+  environment: production
+  organization: "ecosysteme-cloud"
+  cloudProvider: "multi-cloud" # Options: gcp, aws, azure, multi-cloud
+
+# Configuration de l'image
+image:
+  repository: "your-repo/cloud-app"
+  tag: "latest"
+  pullPolicy: Always
+  pullSecrets:
+    - name: docker-registry
+
+# Réplicas
+replicaCount: 3
+
+# Configuration des ressources
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Configuration du pod
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# Configuration de la sécurité
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Configuration du service
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# Configuration du déploiement Blue/Green
+blueGreen:
+  enabled: false
+  # Couleur active (blue ou green)
+  activeColor: blue
+  # Service selector
+  service:
+    blue:
+      selector:
+        version: blue
+    green:
+      selector:
+        version: green
+
+# Configuration du déploiement Canary
+canary:
+  enabled: false
+  # Poids du trafic vers le déploiement canary (%)
+  weight: 20
+  # Analyse des métriques pour le déploiement automatique
+  analysis:
+    enabled: true
+    interval: 30s
+    maxWeight: 50
+    stepWeight: 10
+    metrics:
+      - name: request-success-rate
+        threshold: 99
+        interval: 1m
+      - name: request-duration
+        threshold: 500
+        interval: 1m
+
+# Configuration des Shadow Deployments
+shadow:
+  enabled: false
+  # Pourcentage de trafic à copier vers le déploiement shadow
+  replicaPercentage: 50
+  # Analyse des différences entre la production et le shadow
+  analysis:
+    enabled: true
+    metrics:
+      - name: response-diff-percentage
+        threshold: 5
+
+# Configuration de l'autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Configuration du monitoring
+monitoring:
+  enabled: true
+  # Configuration des règles Prometheus
+  prometheusRules:
+    enabled: true
+    namespace: monitoring
+  # Configuration des dashboards Grafana
+  grafanaDashboards:
+    enabled: true
+
+# Configuration des tests de Chaos Engineering
+chaosEngineering:
+  enabled: true
+  # Tests de chaos planifiés
+  schedule:
+    podFailure:
+      enabled: true
+      cron: "0 2 * * *"
+      duration: 300
+    networkLatency:
+      enabled: true
+      cron: "0 3 * * *"
+      duration: 300
+      latency: 200ms
+
+# Configuration des connexions multi-cloud
+multiCloud:
+  gcp:
+    enabled: true
+    project: "your-gcp-project"
+    region: "europe-west1"
+  aws:
+    enabled: true
+    region: "eu-west-1"
+  azure:
+    enabled: true
+    resourceGroup: "your-resource-group"
+    region: "westeurope"
+
+# Configuration de l'intégration avec les modules d'optimisation quantique
+quantumOptimization:
+  enabled: true
+  schedule: "*/10 * * * *"
+  resourceOptimization: true
+  workloadBalancing: true
+  costOptimization: true
+
+# Configuration du système de fallback
+fallback:
+  enabled: true
+  # Service à surveiller
+  targetService:
+    name: "claude-service"
+    port: 8080
+    healthEndpoint: "/health"
+  # Agent de fallback
+  fallbackAgent:
+    image: "your-repo/fallback-agent:latest"
+    autoActivation: true
+    modelPreference: "anthropic"
+
+# Configuration des probes
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 3
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 20
+  timeoutSeconds: 5
+  successThreshold: 1
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  successThreshold: 1
+  failureThreshold: 30
+
+# Configuration des volumes persistants
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  storageClass: "standard"
+
+# Configuration de l'ingress
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: cloud-app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: cloud-app-tls
+      hosts:
+        - cloud-app.example.com
+
+# Configuration réseau avancée
+networkPolicy:
+  enabled: true
+  ingressRules:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ingress-controller
+  egressRules:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+
+# Configuration du service mesh (Istio)
+istio:
+  enabled: true
+  mtls:
+    mode: STRICT
+  gateway:
+    enabled: true
+  virtualService:
+    enabled: true
+    hosts:
+      - "*"
+    gateways:
+      - cloud-gateway
+    http:
+      - route:
+          - destination:
+              host: cloud-app
+              port:
+                number: 80
+            weight: 100
+
+# Configuration des dépendances externes
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+
+grafana:
+  enabled: true
+  dashboards:
+    default: true
+    custom:
+      cloud-app-dashboard:
+        file: dashboards/cloud-app-dashboard.json
+
+# Configuration des secrets
+secrets:
+  apiKeys:
+    name: "api-keys"
+    mounted: true
+    mountPath: "/app/secrets"
+  tlsCertificates:
+    name: "tls-certificates"
+    mounted: true
+    mountPath: "/app/certs"
+
+# Configuration de la diffusion (rollout)
+rollout:
+  strategy: "Recreate" # Options: Recreate, RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
