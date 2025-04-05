@@ -1,0 +1,125 @@
+name: "Validateur de Workflows"
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/**'
+    branches: [ main ]
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+    branches: [ main ]
+
+# Définition claire des permissions
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  validate:
+    name: Validate Workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Install actionlint
+        run: |
+          # Installation d'actionlint (validateur de workflows GitHub Actions)
+          bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          echo "actionlint installed successfully"
+          actionlint --version
+      
+      - name: Validate workflow files
+        id: validate
+        run: |
+          # Création d'un répertoire pour les résultats
+          mkdir -p reports
+
+          # Analyse de tous les workflows
+          echo "## Analyse des fichiers workflow" > reports/validation-report.md
+          echo "" >> reports/validation-report.md
+          echo "| Fichier | Statut |" >> reports/validation-report.md
+          echo "|---------|--------|" >> reports/validation-report.md
+          
+          # Liste des erreurs pour la vérification finale
+          ERROR_LIST=""
+          
+          # Vérification de chaque fichier workflow
+          for workflow in $(find .github/workflows -name "*.yml" -o -name "*.yaml"); do
+            echo "Validating $workflow..."
+            
+            # Exécution d'actionlint sur le fichier
+            RESULT=$(actionlint -color "$workflow" 2>&1)
+            EXIT_CODE=$?
+            
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "| $workflow | ✅ Valide |" >> reports/validation-report.md
+              echo "✅ $workflow est valide"
+            else
+              echo "| $workflow | ❌ Erreurs trouvées |" >> reports/validation-report.md
+              echo "❌ $workflow contient des erreurs"
+              echo "" >> reports/validation-report.md
+              echo "<details><summary>Détails des erreurs pour $workflow</summary>" >> reports/validation-report.md
+              echo "" >> reports/validation-report.md
+              echo '```' >> reports/validation-report.md
+              echo "$RESULT" >> reports/validation-report.md
+              echo '```' >> reports/validation-report.md
+              echo "</details>" >> reports/validation-report.md
+              echo "" >> reports/validation-report.md
+              
+              # Ajout à la liste des erreurs
+              ERROR_LIST="$ERROR_LIST\n$workflow"
+            fi
+          done
+          
+          # Génération du résumé
+          echo "" >> reports/validation-report.md
+          echo "## Résumé" >> reports/validation-report.md
+          
+          if [ -z "$ERROR_LIST" ]; then
+            echo "✅ Tous les workflows sont valides!" >> reports/validation-report.md
+            echo "::set-output name=validation_status::success"
+          else
+            echo "❌ Certains workflows contiennent des erreurs:" >> reports/validation-report.md
+            echo '```' >> reports/validation-report.md
+            echo -e "$ERROR_LIST" >> reports/validation-report.md
+            echo '```' >> reports/validation-report.md
+            echo "::set-output name=validation_status::failure"
+          fi
+      
+      - name: Upload validation report
+        uses: actions/upload-artifact@v3
+        with:
+          name: workflow-validation-report
+          path: reports/validation-report.md
+      
+      - name: Create check run
+        if: github.event_name != 'pull_request'
+        run: |
+          if [ "${{ steps.validate.outputs.validation_status }}" == "failure" ]; then
+            echo "Des erreurs ont été détectées dans les workflows. Consultez le rapport de validation pour plus de détails."
+            exit 1
+          else
+            echo "Tous les workflows sont valides!"
+          fi
+      
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('reports/validation-report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `# Rapport de validation des workflows\n\n${report}`
+            });
