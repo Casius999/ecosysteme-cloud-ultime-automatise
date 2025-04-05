@@ -1,0 +1,390 @@
+name: "NextGen Integration Example 🔄"
+
+# Ce workflow montre comment intégrer l'architecture NextGen 
+# à un workflow GitHub Actions existant
+
+on:
+  # Garder les déclencheurs originaux
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  
+  # Ajouter le déclencheur manuel avec des options
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environnement de déploiement'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      optimization_level:
+        description: 'Niveau d'optimisation'
+        required: false
+        default: 'standard'
+        type: choice
+        options:
+          - minimal
+          - standard
+          - aggressive
+
+# Conserver les variables d'environnement existantes et ajouter les nôtres
+env:
+  # Variables existantes (exemple)
+  NODE_VERSION: '16'
+  # Variables NextGen
+  NEXTGEN_ENABLED: 'true'
+  OPTIMIZATION_LEVEL: ${{ github.event.inputs.optimization_level || 'standard' }}
+  ENVIRONMENT: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'prod' || 'dev') }}
+
+# Permissions adaptées pour NextGen
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  packages: write
+  deployments: write
+  id-token: write
+
+jobs:
+  # Phase 1: Orchestration NextGen - ajouter avant les jobs existants
+  nextgen-orchestration:
+    name: 🔄 NextGen Orchestration
+    runs-on: ubuntu-latest
+    # Condition pour activer/désactiver facilement NextGen
+    if: env.NEXTGEN_ENABLED == 'true'
+    outputs:
+      orchestration-id: ${{ steps.orchestrator.outputs.orchestration-id }}
+      execution-plan: ${{ steps.orchestrator.outputs.execution-summary }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Configure NextGen environment
+        run: |
+          echo "Setting up NextGen environment..."
+          mkdir -p .github/workflow-config
+          
+          # Création d'un fichier de configuration de base
+          cat > .github/workflow-config.json << EOF
+          {
+            "name": "Integrated NextGen Workflow",
+            "components": [
+              {
+                "id": "preparation",
+                "name": "setup-environment",
+                "parameters": {
+                  "environment": "${{ env.ENVIRONMENT }}"
+                },
+                "dependencies": []
+              },
+              {
+                "id": "security",
+                "name": "security-validation",
+                "parameters": {
+                  "scan-depth": "standard"
+                },
+                "dependencies": ["preparation"]
+              },
+              {
+                "id": "build",
+                "name": "build-project",
+                "parameters": {
+                  "node-version": "${{ env.NODE_VERSION }}"
+                },
+                "dependencies": ["preparation"]
+              },
+              {
+                "id": "test",
+                "name": "test-project",
+                "parameters": {
+                  "with-coverage": true
+                },
+                "dependencies": ["build"]
+              },
+              {
+                "id": "deploy",
+                "name": "deploy-project",
+                "parameters": {
+                  "environment": "${{ env.ENVIRONMENT }}"
+                },
+                "dependencies": ["build", "test", "security"],
+                "conditions": {
+                  "environments": ["staging", "prod"],
+                  "branches": ["main", "develop"]
+                }
+              }
+            ],
+            "optimization": {
+              "level": "${{ env.OPTIMIZATION_LEVEL }}",
+              "caching": true,
+              "parallelize": true
+            }
+          }
+          EOF
+      
+      - name: Workflow Orchestration
+        id: orchestrator
+        uses: ./.github/actions/core/workflow-orchestrator
+        with:
+          config-file: .github/workflow-config.json
+          execution-strategy: adaptive
+          max-parallelism: 16
+          performance-metrics: true
+          dynamic-scaling: true
+      
+      - name: Display orchestration results
+        run: |
+          echo "Orchestration ID: ${{ steps.orchestrator.outputs.orchestration-id }}"
+          echo "Execution plan generated successfully"
+  
+  # Phase 2: Sécurité NextGen
+  nextgen-security:
+    name: 🔒 NextGen Security
+    needs: nextgen-orchestration
+    runs-on: ubuntu-latest
+    if: env.NEXTGEN_ENABLED == 'true'
+    outputs:
+      security-score: ${{ steps.security.outputs.security-score }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Security Analysis
+        id: security
+        uses: ./.github/actions/core/security-enforcer
+        with:
+          scan-depth: standard
+          workflow-file: .github/workflows/nextgen-integration-example.yml
+          repo-scan: true
+          auto-remediate: true
+      
+      - name: Verify security score
+        if: steps.security.outputs.security-score < 70
+        run: |
+          echo "::warning::Security score below threshold: ${{ steps.security.outputs.security-score }}/100"
+          # N'échouez pas le build mais émettez un avertissement pour commencer
+  
+  # Phase 3: Intégration de la phase de préparation existante avec NextGen
+  prepare:
+    name: 🔧 Prepare Environment
+    # Conditionnellement dépendre de l'orchestration si NextGen est activé
+    needs: ${{ env.NEXTGEN_ENABLED == 'true' && 'nextgen-security' || '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      # Étape traditionnelle existante
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      # Intégration NextGen - Optimization des dépendances
+      - name: NextGen Dependency Optimization
+        if: env.NEXTGEN_ENABLED == 'true'
+        uses: ./.github/actions/core/dependency-optimizer
+        with:
+          dependency-file: package.json
+          scan-level: standard
+          auto-update: false  # Commencer prudemment sans mise à jour auto
+          security-check: true
+      
+      # Continuez avec le reste des étapes existantes
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Cache build
+        uses: actions/cache@v3
+        with:
+          path: |
+            .next/cache
+            node_modules/.cache
+          key: ${{ runner.os }}-build-${{ hashFiles('**/package-lock.json') }}
+  
+  # Phase 4: Intégration avec le build existant
+  build:
+    name: 🏗️ Build
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      # Étape existante
+      - name: Build
+        run: npm run build
+      
+      # Ajout du monitoring NextGen
+      - name: NextGen Build Monitoring
+        if: env.NEXTGEN_ENABLED == 'true'
+        uses: ./.github/actions/core/advanced-monitoring
+        with:
+          monitoring-level: standard
+          workflow-id: ${{ github.run_id }}
+          trace-dependencies: true
+          collect-metrics: true
+      
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-output
+          path: build/
+          retention-days: 1
+  
+  # Phase 5: Intégration avec les tests existants
+  test:
+    name: 🧪 Test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build-output
+          path: build/
+      
+      # Étape existante
+      - name: Run tests
+        run: npm test
+      
+      # Ajout du monitoring NextGen
+      - name: NextGen Test Monitoring
+        if: env.NEXTGEN_ENABLED == 'true'
+        uses: ./.github/actions/core/advanced-monitoring
+        with:
+          monitoring-level: standard
+          workflow-id: ${{ github.run_id }}
+          anomaly-detection: true
+  
+  # Phase 6: Déploiement conditionnel
+  deploy:
+    name: 🚀 Deploy
+    # Conditions existantes enrichies avec NextGen
+    if: |
+      success() && 
+      (github.ref == 'refs/heads/main' || github.event.inputs.environment != '') &&
+      (env.NEXTGEN_ENABLED != 'true' || needs.nextgen-security.outputs.security-score >= 70)
+    needs: [test, nextgen-security]
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ env.ENVIRONMENT }}
+      url: https://app.${{ env.ENVIRONMENT }}.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build-output
+          path: build/
+      
+      # Étape existante
+      - name: Deploy
+        run: |
+          echo "Deploying to ${{ env.ENVIRONMENT }}..."
+          # Commandes de déploiement réelles ici
+      
+      # Ajout du monitoring NextGen
+      - name: NextGen Deployment Monitoring
+        if: env.NEXTGEN_ENABLED == 'true'
+        uses: ./.github/actions/core/advanced-monitoring
+        with:
+          monitoring-level: complete
+          workflow-id: ${{ github.run_id }}
+          anomaly-detection: true
+          predictive-analysis: true
+  
+  # Phase 7: Rapport final NextGen
+  nextgen-report:
+    name: 📊 NextGen Report
+    if: always() && env.NEXTGEN_ENABLED == 'true'
+    needs: [nextgen-orchestration, nextgen-security, prepare, build, test, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Generate NextGen Report
+        run: |
+          echo "Generating NextGen workflow report..."
+          
+          # Création d'un rapport Markdown
+          mkdir -p reports
+          
+          cat > reports/nextgen-report.md << EOF
+          # Rapport d'Intégration NextGen
+          
+          **Workflow**: ${{ github.workflow }}  
+          **Exécution**: ${{ github.run_id }}  
+          **Déclencheur**: ${{ github.event_name }}  
+          **Branch/Tag**: ${{ github.ref_name }}
+          
+          ## Statuts
+          
+          | Étape | Statut | Métriques |
+          |-------|--------|-----------|
+          | Orchestration | ${{ needs.nextgen-orchestration.result }} | ID: ${{ needs.nextgen-orchestration.outputs.orchestration-id }} |
+          | Sécurité | ${{ needs.nextgen-security.result }} | Score: ${{ needs.nextgen-security.outputs.security-score || 'N/A' }}/100 |
+          | Préparation | ${{ needs.prepare.result }} | - |
+          | Build | ${{ needs.build.result }} | - |
+          | Test | ${{ needs.test.result }} | - |
+          | Déploiement | ${{ contains(needs.*.result, 'deploy') && needs.deploy.result || 'Non exécuté' }} | Env: ${{ env.ENVIRONMENT }} |
+          
+          ## Mode d'intégration
+          
+          L'intégration NextGen a été exécutée en mode **${{ env.OPTIMIZATION_LEVEL }}**.
+          
+          ## Recommandations
+          
+          - Activation progressive des fonctionnalités NextGen
+          - Surveillance des métriques de performance
+          - Optimisation continue des workflows
+          EOF
+      
+      - name: Upload NextGen report
+        uses: actions/upload-artifact@v3
+        with:
+          name: nextgen-integration-report
+          path: reports/
+          retention-days: 30
+      
+      - name: Summary
+        run: |
+          echo "## Intégration NextGen" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode d'optimisation**: ${{ env.OPTIMIZATION_LEVEL }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Score de sécurité**: ${{ needs.nextgen-security.outputs.security-score || 'N/A' }}/100" >> $GITHUB_STEP_SUMMARY
+          echo "**Orchestration ID**: ${{ needs.nextgen-orchestration.outputs.orchestration-id }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "L'intégration NextGen a été exécutée avec succès. Le rapport complet est disponible dans les artefacts." >> $GITHUB_STEP_SUMMARY
