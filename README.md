@@ -51,18 +51,18 @@ chmod +x scripts/deploy_infrastructure.sh
 
 ## 🚀 DÉPLOIEMENT EN PRODUCTION
 
-Pour lancer le pipeline de déploiement en production :
+Pour lancer le pipeline de déploiement en production via GitHub Actions :
 
 1. **Via l'interface GitHub** :
    - Accédez à l'onglet "Actions" du dépôt
-   - Sélectionnez le workflow "Ultimate Pipeline CI/CD"
+   - Sélectionnez le workflow "Cloud Ecosystem Pipeline CI/CD"
    - Cliquez sur "Run workflow"
    - Choisissez "prod" dans le menu déroulant "environment"
    - Cliquez sur le bouton vert "Run workflow"
 
 2. **Via le terminal** (nécessite GitHub CLI) :
    ```bash
-   gh workflow run ultimate-pipeline.yml --ref main -f environment=prod
+   gh workflow run cloud-ecosystem-pipeline.yml --ref main -f environment=prod
    ```
 
 Le workflow a été optimisé pour assurer une conformité totale avec la Charte d'Intégrité Systémique, incluant :
@@ -95,6 +95,25 @@ Le rapport de vérification d'intégrité inclut :
 - Validation de l'absence de simulations fictives
 - Vérification de la traçabilité des transactions
 - Détection des vulnérabilités potentielles
+
+## 🔄 WORKFLOWS OPTIMISÉS
+
+Les workflows GitHub Actions ont été optimisés pour garantir un fonctionnement à 100%, conformément à la Charte d'Intégrité Systémique :
+
+1. **[Cloud Ecosystem Pipeline CI/CD](.github/workflows/cloud-ecosystem-pipeline.yml)** - Pipeline principal de CI/CD
+   - Vérification préalable de l'intégrité du système
+   - Surveillance et intégration du système de fallback Claude Desktop
+   - Construction et déploiement des conteneurs Docker
+   - Préparation et validation des déploiements
+   - Génération de rapports détaillés conformes à la Charte d'Intégrité
+
+2. **[Vérification d'Intégrité Systémique](.github/workflows/integrity-check.yml)** - Validation continue de l'intégrité
+   - Vérification de la structure du projet
+   - Validation de la Charte d'Intégrité
+   - Détection des simulations fictives
+   - Création des rapports horodatés cryptographiquement
+
+Ces workflows sont conçus pour fonctionner en parfaite synergie et garantir un déploiement sans faille, même en l'absence de certains composants.
 
 ## Table des matières
 
@@ -139,7 +158,7 @@ Pipeline CI/CD segmenté pour orchestrer les tests, le build, le déploiement pr
 - Simulation Quantique (Qiskit AER) : Intègre une étape de simulation en production pour optimiser les paramètres en continu.
 
 **Fichiers associés :**
-- [.github/workflows/ultimate-pipeline.yml](.github/workflows/ultimate-pipeline.yml) - Pipeline CI/CD principal
+- [.github/workflows/cloud-ecosystem-pipeline.yml](.github/workflows/cloud-ecosystem-pipeline.yml) - Pipeline CI/CD principal
 - [.github/workflows/integrity-check.yml](.github/workflows/integrity-check.yml) - Vérification de l'intégrité systémique
 
 ## 3. Containerisation & Orchestration avec Docker & Kubernetes
@@ -312,9 +331,22 @@ Pour déployer l'écosystème complet, deux options s'offrent à vous:
    python scripts/verify_integrity.py
    ```
 
-### Option 2 : Déploiement Manuel (Étape par étape)
+### Option 2 : Déploiement via GitHub Actions
 
-Voir le [Guide de Déploiement](./DEPLOYMENT.md) pour les instructions détaillées du déploiement manuel.
+1. **Configurez vos secrets GitHub** :
+   - Allez dans Settings > Secrets > Actions
+   - Ajoutez tous vos identifiants cloud comme secrets GitHub
+
+2. **Exécutez le workflow principal** :
+   ```bash
+   gh workflow run cloud-ecosystem-pipeline.yml --ref main -f environment=prod
+   ```
+
+3. **Suivez l'exécution du workflow** :
+   - Allez dans l'onglet Actions de votre dépôt GitHub
+   - Vérifiez les logs et artefacts générés
+
+Pour plus de détails, consultez le [Guide de Déploiement](./DEPLOYMENT.md).
 
 ## Instructions Finales
 
