@@ -1,0 +1,33 @@
+name: "Workflow de Test avec Problèmes à Corriger"
+
+on:
+  # Ce workflow sera exécuté automatiquement
+  workflow_dispatch:
+  # Exécution sur un schedule qui ne se déclenchera pas réellement (pour test uniquement)
+  schedule:
+    - cron: '30 5 31 2 *'  # 31 février n'existe pas, donc ne se déclenchera jamais
+
+# Problème volontaire 1: Pas de section permissions
+
+jobs:
+  test_job:
+    runs-on: ubuntu-16.04  # Problème volontaire 2: Version obsolète d'Ubuntu
+    # Problème volontaire 3: Pas de timeout-minutes
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v1  # Problème volontaire 4: Version obsolète de checkout
+        # Problème volontaire 5: Pas de fetch-depth
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v1  # Problème volontaire 6: Version obsolète de setup-node
+        with:
+          node-version: '14.x'
+      
+      - name: Set output  # Problème volontaire 7: Utilisation de set-output déprécié
+        run: |
+          echo "::set-output name=test_var::test_value"
+      
+      - name: Run tests
+        run: |
+          echo "Exécution des tests"
+          echo "Ce workflow contient des erreurs que l'agent d'auto-correction devrait détecter"
