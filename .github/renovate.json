@@ -1,0 +1,55 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:base",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    ":automergePatch",
+    ":automergeMinor",
+    ":enableVulnerabilityAlerts"
+  ],
+  "enabledManagers": ["npm", "pip-requirements", "dockerfile", "terraform", "github-actions"],
+  "schedule": ["at any time"],
+  "timezone": "UTC",
+  "labels": ["dependencies", "automated", "renovate"],
+  "reviewers": ["Casius999"],
+  "assignees": ["Casius999"],
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true
+    },
+    {
+      "matchDepTypes": ["devDependencies"],
+      "automerge": true
+    },
+    {
+      "matchManagers": ["terraform"],
+      "addLabels": ["terraform-update"]
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "addLabels": ["docker-update"]
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "addLabels": ["github-actions-update"]
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"],
+    "automerge": true
+  },
+  "dependencyDashboard": true,
+  "dependencyDashboardTitle": "Tableau de bord des dépendances",
+  "prCreation": "immediate",
+  "prConcurrentLimit": 10,
+  "prHourlyLimit": 5,
+  "rangeStrategy": "auto",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
+  "configMigration": true
+}
