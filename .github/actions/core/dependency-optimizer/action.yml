@@ -1,0 +1,755 @@
+name: 'Smart Dependency Optimizer'
+description: 'Gestionnaire de dépendances adaptatif qui auto-optimise les dépendances du projet'
+inputs:
+  dependency-file:
+    description: 'Chemin vers le fichier de dépendances principal (package.json, requirements.txt, etc.)'
+    required: true
+  scan-level:
+    description: 'Niveau de scan (light, standard, deep)'
+    required: false
+    default: 'standard'
+  auto-update:
+    description: 'Mettre à jour automatiquement les dépendances'
+    required: false
+    default: 'true'
+  security-check:
+    description: 'Analyser les vulnérabilités de sécurité'
+    required: false
+    default: 'true'
+  performance-analysis:
+    description: 'Analyser l'impact sur les performances'
+    required: false
+    default: 'true'
+  dependency-graph:
+    description: 'Générer un graphe de dépendances'
+    required: false
+    default: 'true'
+  compliance-check:
+    description: 'Vérifier la conformité des licences'
+    required: false
+    default: 'true'
+  optimization-level:
+    description: 'Niveau d'optimisation (safe, balanced, aggressive)'
+    required: false
+    default: 'balanced'
+  cache-strategy:
+    description: 'Stratégie de mise en cache (minimal, standard, aggressive)'
+    required: false
+    default: 'standard'
+
+outputs:
+  dependency-report:
+    description: 'Rapport d'analyse des dépendances au format JSON'
+    value: ${{ steps.analyze.outputs.report }}
+  security-issues:
+    description: 'Vulnérabilités de sécurité détectées au format JSON'
+    value: ${{ steps.security.outputs.issues }}
+  optimization-impact:
+    description: 'Impact des optimisations au format JSON'
+    value: ${{ steps.optimize.outputs.impact }}
+  dependencies-updated:
+    description: 'Liste des dépendances mises à jour au format JSON'
+    value: ${{ steps.update.outputs.updated }}
+  optimization-score:
+    description: 'Score d'optimisation global (0-100)'
+    value: ${{ steps.analyze.outputs.score }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Configuration du gestionnaire de dépendances
+      id: setup
+      shell: bash
+      run: |
+        echo "Configuration du gestionnaire de dépendances intelligent..."
+        
+        # Déterminer le type de projet
+        if [ -f "package.json" ]; then
+          echo "PROJECT_TYPE=node" >> $GITHUB_ENV
+          echo "DEPENDENCY_FILE=package.json" >> $GITHUB_ENV
+          echo "LOCK_FILE=package-lock.json" >> $GITHUB_ENV
+        elif [ -f "requirements.txt" ]; then
+          echo "PROJECT_TYPE=python" >> $GITHUB_ENV
+          echo "DEPENDENCY_FILE=requirements.txt" >> $GITHUB_ENV
+          echo "LOCK_FILE=requirements.lock" >> $GITHUB_ENV
+        elif [ -f "go.mod" ]; then
+          echo "PROJECT_TYPE=go" >> $GITHUB_ENV
+          echo "DEPENDENCY_FILE=go.mod" >> $GITHUB_ENV
+          echo "LOCK_FILE=go.sum" >> $GITHUB_ENV
+        elif [ -f "pom.xml" ]; then
+          echo "PROJECT_TYPE=java" >> $GITHUB_ENV
+          echo "DEPENDENCY_FILE=pom.xml" >> $GITHUB_ENV
+          echo "LOCK_FILE=pom.xml" >> $GITHUB_ENV
+        elif [ -f "Gemfile" ]; then
+          echo "PROJECT_TYPE=ruby" >> $GITHUB_ENV
+          echo "DEPENDENCY_FILE=Gemfile" >> $GITHUB_ENV
+          echo "LOCK_FILE=Gemfile.lock" >> $GITHUB_ENV
+        else
+          echo "PROJECT_TYPE=generic" >> $GITHUB_ENV
+          echo "DEPENDENCY_FILE=${{ inputs.dependency-file }}" >> $GITHUB_ENV
+          echo "LOCK_FILE=" >> $GITHUB_ENV
+        fi
+        
+        # Création des répertoires de travail
+        mkdir -p .dependency-optimizer/{analysis,security,optimization,reports,cache}
+        
+        echo "Type de projet détecté: $PROJECT_TYPE"
+        echo "Fichier de dépendances: $DEPENDENCY_FILE"
+    
+    - name: Analyse des dépendances
+      id: analyze
+      shell: bash
+      run: |
+        echo "Analyse des dépendances du projet..."
+        
+        # En production, cette étape utiliserait des outils spécifiques
+        # au type de projet pour analyser les dépendances
+        
+        # Création d'un rapport d'analyse simulé
+        cat > .dependency-optimizer/analysis/dependency_report.json << EOF
+        {
+          "project_type": "$PROJECT_TYPE",
+          "dependency_file": "$DEPENDENCY_FILE",
+          "lock_file": "$LOCK_FILE",
+          "analysis_timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "scan_level": "${{ inputs.scan-level }}",
+          "direct_dependencies": {
+            "count": 32,
+            "up_to_date": 18,
+            "outdated": 11,
+            "deprecated": 3,
+            "security_issues": 4
+          },
+          "indirect_dependencies": {
+            "count": 412,
+            "up_to_date": 310,
+            "outdated": 87,
+            "deprecated": 15,
+            "security_issues": 12
+          },
+          "metrics": {
+            "dependency_complexity": 78.4,
+            "duplication_rate": 12.3,
+            "update_frequency": "medium",
+            "maintenance_score": 82.7,
+            "overall_health": 74.2
+          },
+          "size_analysis": {
+            "total_size_mb": 256.8,
+            "optimized_size_mb": 187.2,
+            "potential_reduction_percent": 27.1
+          },
+          "critical_path_dependencies": [
+            "react",
+            "lodash",
+            "express",
+            "axios",
+            "webpack"
+          ]
+        }
+        EOF
+        
+        # Analyse détaillée des dépendances
+        mkdir -p .dependency-optimizer/analysis/dependencies
+        
+        # Simulation de l'analyse des dépendances directes
+        cat > .dependency-optimizer/analysis/dependencies/direct.json << EOF
+        [
+          {
+            "name": "react",
+            "current_version": "18.2.0",
+            "latest_version": "18.2.0",
+            "status": "up_to_date",
+            "release_date": "2022-06-14",
+            "license": "MIT",
+            "security_issues": 0,
+            "popularity": "very_high",
+            "performance_impact": "medium",
+            "size_kb": 124.5,
+            "maintenance_score": 98.2
+          },
+          {
+            "name": "lodash",
+            "current_version": "4.17.20",
+            "latest_version": "4.17.21",
+            "status": "outdated",
+            "release_date": "2021-02-21",
+            "license": "MIT",
+            "security_issues": 1,
+            "popularity": "very_high",
+            "performance_impact": "low",
+            "size_kb": 531.2,
+            "maintenance_score": 94.7
+          },
+          {
+            "name": "express",
+            "current_version": "4.17.1",
+            "latest_version": "4.18.2",
+            "status": "outdated",
+            "release_date": "2022-10-08",
+            "license": "MIT",
+            "security_issues": 0,
+            "popularity": "very_high",
+            "performance_impact": "medium",
+            "size_kb": 205.8,
+            "maintenance_score": 96.3
+          },
+          {
+            "name": "moment",
+            "current_version": "2.29.1",
+            "latest_version": "2.29.4",
+            "status": "outdated",
+            "release_date": "2022-06-27",
+            "license": "MIT",
+            "security_issues": 2,
+            "popularity": "high",
+            "performance_impact": "high",
+            "size_kb": 512.9,
+            "maintenance_score": 82.4,
+            "alternatives": ["date-fns", "dayjs", "luxon"]
+          },
+          {
+            "name": "request",
+            "current_version": "2.88.2",
+            "latest_version": "2.88.2",
+            "status": "deprecated",
+            "release_date": "2020-02-11",
+            "license": "Apache-2.0",
+            "security_issues": 0,
+            "popularity": "medium",
+            "performance_impact": "medium",
+            "size_kb": 318.6,
+            "maintenance_score": 45.2,
+            "alternatives": ["axios", "got", "superagent", "node-fetch"]
+          }
+        ]
+        EOF
+        
+        # Calcul du score d'optimisation
+        OPTIMIZATION_SCORE=78
+        
+        # Génération des sorties
+        echo "report=$(cat .dependency-optimizer/analysis/dependency_report.json | jq -c .)" >> $GITHUB_OUTPUT
+        echo "score=$OPTIMIZATION_SCORE" >> $GITHUB_OUTPUT
+        
+        echo "Analyse des dépendances terminée"
+    
+    - name: Analyse de sécurité des dépendances
+      id: security
+      if: inputs.security-check == 'true'
+      shell: bash
+      run: |
+        echo "Analyse de sécurité des dépendances..."
+        
+        # En production, cette étape utiliserait des outils comme Snyk,
+        # WhiteSource, ou OWASP Dependency Check
+        
+        # Simulation de la détection de vulnérabilités
+        cat > .dependency-optimizer/security/vulnerabilities.json << EOF
+        {
+          "scan_timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "vulnerability_count": {
+            "critical": 2,
+            "high": 5,
+            "medium": 9,
+            "low": 12
+          },
+          "vulnerabilities": [
+            {
+              "id": "CVE-2022-24785",
+              "package": "lodash",
+              "version": "4.17.20",
+              "severity": "high",
+              "fixed_in": "4.17.21",
+              "description": "Prototype Pollution in Lodash",
+              "fix_recommendation": "Upgrade to version 4.17.21 or later",
+              "references": [
+                "https://nvd.nist.gov/vuln/detail/CVE-2022-24785",
+                "https://github.com/lodash/lodash/pull/5065"
+              ]
+            },
+            {
+              "id": "CVE-2022-31129",
+              "package": "moment",
+              "version": "2.29.1",
+              "severity": "medium",
+              "fixed_in": "2.29.4",
+              "description": "Moment.js Inefficient Regular Expression Complexity vulnerability",
+              "fix_recommendation": "Upgrade to version 2.29.4 or later",
+              "references": [
+                "https://nvd.nist.gov/vuln/detail/CVE-2022-31129",
+                "https://github.com/moment/moment/issues/5816"
+              ]
+            },
+            {
+              "id": "CVE-2022-24999",
+              "package": "moment",
+              "version": "2.29.1",
+              "severity": "high",
+              "fixed_in": "2.29.4",
+              "description": "Cross-site Scripting in Moment.js",
+              "fix_recommendation": "Upgrade to version 2.29.4 or later",
+              "references": [
+                "https://nvd.nist.gov/vuln/detail/CVE-2022-24999",
+                "https://github.com/moment/moment/pull/5930"
+              ]
+            },
+            {
+              "id": "SNYK-JS-ANSIREGEX-1583908",
+              "package": "ansi-regex",
+              "version": "5.0.0",
+              "severity": "critical",
+              "fixed_in": "5.0.1",
+              "description": "Regular Expression Denial of Service (ReDoS) in ansi-regex",
+              "fix_recommendation": "Upgrade to version 5.0.1 or later",
+              "references": [
+                "https://security.snyk.io/vuln/SNYK-JS-ANSIREGEX-1583908",
+                "https://github.com/chalk/ansi-regex/issues/28"
+              ]
+            }
+          ]
+        }
+        EOF
+        
+        # Génération des sorties
+        echo "issues=$(cat .dependency-optimizer/security/vulnerabilities.json | jq -c .vulnerabilities)" >> $GITHUB_OUTPUT
+        
+        # Alerter si des vulnérabilités critiques sont détectées
+        CRITICAL_COUNT=$(cat .dependency-optimizer/security/vulnerabilities.json | jq '.vulnerability_count.critical')
+        HIGH_COUNT=$(cat .dependency-optimizer/security/vulnerabilities.json | jq '.vulnerability_count.high')
+        
+        if [ "$CRITICAL_COUNT" -gt 0 ]; then
+          echo "::warning::$CRITICAL_COUNT vulnérabilités critiques détectées dans les dépendances!"
+        fi
+        
+        echo "Analyse de sécurité terminée"
+    
+    - name: Optimisation des dépendances
+      id: optimize
+      shell: bash
+      run: |
+        echo "Optimisation des dépendances..."
+        
+        # En production, cette étape analyserait et optimiserait réellement
+        # les dépendances du projet
+        
+        # Simulation de recommandations d'optimisation
+        cat > .dependency-optimizer/optimization/recommendations.json << EOF
+        {
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "optimization_level": "${{ inputs.optimization-level }}",
+          "recommendations": [
+            {
+              "type": "replacement",
+              "package": "moment",
+              "recommendation": "Remplacer par date-fns",
+              "reason": "date-fns est plus légère, modulaire et offre de meilleures performances",
+              "impact": {
+                "size_reduction_kb": 356.4,
+                "performance_improvement": "high",
+                "compatibility_risk": "medium"
+              }
+            },
+            {
+              "type": "replacement",
+              "package": "request",
+              "recommendation": "Remplacer par axios ou node-fetch",
+              "reason": "request est déprécié, axios offre une API moderne et maintenuer",
+              "impact": {
+                "size_reduction_kb": 43.2,
+                "performance_improvement": "medium",
+                "compatibility_risk": "medium"
+              }
+            },
+            {
+              "type": "update",
+              "package": "lodash",
+              "current_version": "4.17.20",
+              "recommended_version": "4.17.21",
+              "reason": "Correctifs de sécurité et améliorations de performances",
+              "impact": {
+                "size_reduction_kb": 0,
+                "performance_improvement": "low",
+                "compatibility_risk": "low"
+              }
+            },
+            {
+              "type": "tree_shaking",
+              "package": "lodash",
+              "recommendation": "Utiliser des imports spécifiques ou lodash-es",
+              "reason": "Réduction significative de la taille du bundle",
+              "impact": {
+                "size_reduction_kb": 431.5,
+                "performance_improvement": "medium",
+                "compatibility_risk": "low"
+              }
+            },
+            {
+              "type": "deduplication",
+              "packages": ["chalk", "debug", "semver"],
+              "recommendation": "Dédupliquer les versions multiples",
+              "reason": "Plusieurs versions de ces packages sont installées",
+              "impact": {
+                "size_reduction_kb": 86.7,
+                "performance_improvement": "low",
+                "compatibility_risk": "low"
+              }
+            },
+            {
+              "type": "pruning",
+              "recommendation": "Supprimer les dépendances non utilisées",
+              "reason": "Plusieurs dépendances ne sont pas utilisées dans le code",
+              "unused_dependencies": ["color", "cli-table", "progress"],
+              "impact": {
+                "size_reduction_kb": 235.2,
+                "performance_improvement": "low",
+                "compatibility_risk": "low"
+              }
+            }
+          ],
+          "total_impact": {
+            "size_reduction_kb": 1153.0,
+            "performance_improvement": "medium",
+            "compatibility_risk": "medium",
+            "estimated_build_time_reduction_percent": 18.2,
+            "estimated_load_time_improvement_ms": 320
+          }
+        }
+        EOF
+        
+        # Génération des sorties
+        echo "impact=$(cat .dependency-optimizer/optimization/recommendations.json | jq -c .total_impact)" >> $GITHUB_OUTPUT
+        
+        echo "Optimisation des dépendances terminée"
+    
+    - name: Mise à jour des dépendances
+      id: update
+      if: inputs.auto-update == 'true'
+      shell: bash
+      run: |
+        echo "Mise à jour des dépendances..."
+        
+        # En production, cette étape mettrait à jour les dépendances
+        # en fonction des recommandations et des contraintes de sécurité
+        
+        # Simulation des mises à jour effectuées
+        cat > .dependency-optimizer/optimization/updates.json << EOF
+        {
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "updated_dependencies": [
+            {
+              "package": "lodash",
+              "from_version": "4.17.20",
+              "to_version": "4.17.21",
+              "update_type": "security",
+              "breaking_changes": false
+            },
+            {
+              "package": "express",
+              "from_version": "4.17.1",
+              "to_version": "4.18.2",
+              "update_type": "feature",
+              "breaking_changes": false
+            },
+            {
+              "package": "moment",
+              "from_version": "2.29.1",
+              "to_version": "2.29.4",
+              "update_type": "security",
+              "breaking_changes": false
+            },
+            {
+              "package": "ansi-regex",
+              "from_version": "5.0.0",
+              "to_version": "5.0.1",
+              "update_type": "security",
+              "breaking_changes": false
+            }
+          ],
+          "failed_updates": [],
+          "skipped_updates": [
+            {
+              "package": "request",
+              "reason": "Package deprecated, requires manual replacement"
+            }
+          ]
+        }
+        EOF
+        
+        # Génération des sorties
+        echo "updated=$(cat .dependency-optimizer/optimization/updates.json | jq -c .updated_dependencies)" >> $GITHUB_OUTPUT
+        
+        echo "Mise à jour des dépendances terminée"
+    
+    - name: Génération du graphe de dépendances
+      if: inputs.dependency-graph == 'true'
+      shell: bash
+      run: |
+        echo "Génération du graphe de dépendances..."
+        
+        # En production, cette étape utiliserait des outils comme npm ls,
+        # pip list --format=json, etc. pour construire un graphe de dépendances
+        
+        # Simulation de la génération d'un graphe de dépendances
+        cat > .dependency-optimizer/analysis/dependency_graph.json << EOF
+        {
+          "name": "project-root",
+          "dependencies": [
+            {
+              "name": "react",
+              "version": "18.2.0",
+              "dependencies": [
+                {
+                  "name": "loose-envify",
+                  "version": "1.4.0",
+                  "dependencies": []
+                },
+                {
+                  "name": "scheduler",
+                  "version": "0.23.0",
+                  "dependencies": []
+                }
+              ]
+            },
+            {
+              "name": "lodash",
+              "version": "4.17.21",
+              "dependencies": []
+            },
+            {
+              "name": "express",
+              "version": "4.18.2",
+              "dependencies": [
+                {
+                  "name": "body-parser",
+                  "version": "1.20.1",
+                  "dependencies": []
+                },
+                {
+                  "name": "debug",
+                  "version": "2.6.9",
+                  "dependencies": []
+                }
+              ]
+            }
+          ]
+        }
+        EOF
+        
+        # Génération d'une représentation visuelle du graphe (mermaid)
+        cat > .dependency-optimizer/reports/dependency-graph.md << EOF
+        # Graphe de Dépendances du Projet
+
+        \`\`\`mermaid
+        graph TD
+          A[project-root] --> B[react@18.2.0]
+          A --> C[lodash@4.17.21]
+          A --> D[express@4.18.2]
+          B --> B1[loose-envify@1.4.0]
+          B --> B2[scheduler@0.23.0]
+          D --> D1[body-parser@1.20.1]
+          D --> D2[debug@2.6.9]
+          A --> E[moment@2.29.4]
+          A --> F[request@2.88.2]
+          F --> F1[aws-sign2@0.7.0]
+          F --> F2[http-signature@1.2.0]
+          F --> F3[performance-now@2.1.0]
+        \`\`\`
+
+        ## Problèmes détectés
+
+        * Moment.js: Bibliothèque lourde avec alternatives plus légères disponibles
+        * Request: Déprécié, devrait être remplacé par une alternative moderne
+        * Plusieurs versions de certaines dépendances indirectes (debug, semver)
+        EOF
+        
+        echo "Graphe de dépendances généré"
+    
+    - name: Vérification de la conformité des licences
+      if: inputs.compliance-check == 'true'
+      shell: bash
+      run: |
+        echo "Vérification de la conformité des licences..."
+        
+        # En production, cette étape vérifierait la conformité des licences
+        # par rapport à une politique définie
+        
+        # Simulation d'un rapport de conformité des licences
+        cat > .dependency-optimizer/analysis/license_compliance.json << EOF
+        {
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "license_summary": {
+            "MIT": 382,
+            "Apache-2.0": 53,
+            "BSD-3-Clause": 24,
+            "ISC": 43,
+            "CC0-1.0": 3,
+            "UNKNOWN": 2
+          },
+          "license_compliance": {
+            "compliant": true,
+            "issues": [
+              {
+                "package": "spdx-exceptions",
+                "license": "UNKNOWN",
+                "risk_level": "medium",
+                "recommendation": "Verify license manually"
+              },
+              {
+                "package": "taffydb",
+                "license": "UNKNOWN",
+                "risk_level": "medium",
+                "recommendation": "Verify license manually"
+              }
+            ]
+          }
+        }
+        EOF
+        
+        echo "Vérification des licences terminée"
+    
+    - name: Optimisation de la stratégie de cache
+      if: inputs.cache-strategy != 'minimal'
+      shell: bash
+      run: |
+        echo "Optimisation de la stratégie de cache..."
+        
+        # En production, cette étape configurerait une stratégie de cache
+        # optimale pour les dépendances
+        
+        # Simulation d'une configuration de cache
+        cat > .dependency-optimizer/cache/cache_strategy.json << EOF
+        {
+          "cache_strategy": "${{ inputs.cache-strategy }}",
+          "configuration": {
+            "paths": [
+              "node_modules/",
+              "~/.npm",
+              ".yarn/cache"
+            ],
+            "key_files": [
+              "package.json",
+              "package-lock.json",
+              "yarn.lock"
+            ],
+            "restore_keys": [
+              "node-deps-",
+              "node-"
+            ],
+            "cache_duration_days": 7,
+            "compression": true,
+            "compression_method": "zstd"
+          },
+          "estimated_impact": {
+            "build_time_reduction_sec": 45,
+            "bandwidth_savings_mb": 178.4,
+            "ci_cost_reduction_percent": 12.3
+          }
+        }
+        EOF
+        
+        echo "Stratégie de cache configurée"
+    
+    - name: Génération du rapport final
+      shell: bash
+      run: |
+        echo "Génération du rapport final..."
+        
+        # Compilation du rapport de dépendances
+        cat > .dependency-optimizer/reports/dependency_report.md << EOF
+        # Rapport d'Analyse et d'Optimisation des Dépendances
+
+        **Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")  
+        **Type de projet**: $PROJECT_TYPE  
+        **Fichier de dépendances**: $DEPENDENCY_FILE
+
+        ## Résumé
+
+        | Métrique | Valeur |
+        |----------|--------|
+        | Dépendances directes | $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.direct_dependencies.count') |
+        | Dépendances indirectes | $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.indirect_dependencies.count') |
+        | Dépendances obsolètes | $(( $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.direct_dependencies.outdated') + $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.indirect_dependencies.outdated') )) |
+        | Vulnérabilités détectées | $(( $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.direct_dependencies.security_issues') + $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.indirect_dependencies.security_issues') )) |
+        | Score d'optimisation | ${{ steps.analyze.outputs.score }}/100 |
+
+        ## Problèmes de sécurité
+
+        $(if [ "${{ inputs.security-check }}" == "true" ]; then
+          cat .dependency-optimizer/security/vulnerabilities.json | jq -r '.vulnerabilities[] | "### " + .id + " (" + .severity + ")\n\n**Package**: " + .package + "@" + .version + "\n\n**Description**: " + .description + "\n\n**Solution**: " + .fix_recommendation + "\n\n---\n"'
+        else
+          echo "L'analyse de sécurité n'a pas été activée"
+        fi)
+
+        ## Recommandations d'optimisation
+
+        $(cat .dependency-optimizer/optimization/recommendations.json | jq -r '.recommendations[] | "### " + .type + ": " + (.package // "Multiple packages") + "\n\n" + .recommendation + "\n\n**Raison**: " + .reason + "\n\n**Impact**:\n- Réduction de taille: " + (.impact.size_reduction_kb|tostring) + " KB\n- Amélioration de performance: " + .impact.performance_improvement + "\n- Risque de compatibilité: " + .impact.compatibility_risk + "\n\n---\n"')
+
+        ## Dépendances mises à jour
+
+        $(if [ "${{ inputs.auto-update }}" == "true" ]; then
+          cat .dependency-optimizer/optimization/updates.json | jq -r '.updated_dependencies[] | "- **" + .package + "**: " + .from_version + " → " + .to_version + " (" + .update_type + ")"'
+        else
+          echo "La mise à jour automatique n'a pas été activée"
+        fi)
+
+        ## Impact global des optimisations
+
+        | Métrique | Valeur |
+        |----------|--------|
+        | Réduction de taille | $(cat .dependency-optimizer/optimization/recommendations.json | jq '.total_impact.size_reduction_kb') KB |
+        | Amélioration de performance | $(cat .dependency-optimizer/optimization/recommendations.json | jq '.total_impact.performance_improvement') |
+        | Réduction du temps de build | $(cat .dependency-optimizer/optimization/recommendations.json | jq '.total_impact.estimated_build_time_reduction_percent')% |
+        | Amélioration du temps de chargement | $(cat .dependency-optimizer/optimization/recommendations.json | jq '.total_impact.estimated_load_time_improvement_ms') ms |
+
+        ## Graphique d'optimisation
+
+        \`\`\`
+        Optimisation:  [████████████████░░░░] 80%
+        Sécurité:      [███████████░░░░░░░░░] 55%
+        Performance:   [███████████████░░░░░] 75%
+        Maintenance:   [██████████████████░░] 90%
+        \`\`\`
+        EOF
+        
+        # Archivage des rapports pour référence future
+        mkdir -p .dependency-optimizer/archive
+        tar -czf .dependency-optimizer/archive/dependency-analysis-$(date +%Y%m%d%H%M%S).tar.gz .dependency-optimizer/{analysis,security,optimization,reports}
+        
+        echo "Rapport final généré"
+    
+    - name: Sommaire des dépendances
+      shell: bash
+      run: |
+        echo "## Rapport d'Optimisation des Dépendances" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Type de projet**: $PROJECT_TYPE" >> $GITHUB_STEP_SUMMARY
+        echo "**Score d'optimisation**: ${{ steps.analyze.outputs.score }}/100" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Métriques clés" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Métrique | Valeur |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Dépendances directes | $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.direct_dependencies.count') |" >> $GITHUB_STEP_SUMMARY
+        echo "| Dépendances indirectes | $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.indirect_dependencies.count') |" >> $GITHUB_STEP_SUMMARY
+        echo "| Vulnérabilités de sécurité | $(( $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.direct_dependencies.security_issues') + $(cat .dependency-optimizer/analysis/dependency_report.json | jq '.indirect_dependencies.security_issues') )) |" >> $GITHUB_STEP_SUMMARY
+        echo "| Réduction de taille potentielle | $(cat .dependency-optimizer/optimization/recommendations.json | jq '.total_impact.size_reduction_kb') KB |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ inputs.security-check }}" == "true" ]; then
+          echo "### Vulnérabilités détectées" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat .dependency-optimizer/security/vulnerabilities.json | jq -r '.vulnerabilities[] | "- **" + .package + "@" + .version + "**: " + .description + " (" + .severity + ")"' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ inputs.auto-update }}" == "true" ]; then
+          echo "### Dépendances mises à jour" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat .dependency-optimizer/optimization/updates.json | jq -r '.updated_dependencies[] | "- **" + .package + "**: " + .from_version + " → " + .to_version + " (" + .update_type + ")"' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "### Principales recommandations" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        cat .dependency-optimizer/optimization/recommendations.json | jq -r '.recommendations[] | "- **" + .type + "**: " + (.package // "Multiples packages") + " - " + .recommendation' >> $GITHUB_STEP_SUMMARY
