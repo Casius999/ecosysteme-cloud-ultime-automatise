@@ -1,0 +1,144 @@
+name: Super-Linter - Analyse de code complète
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 3'  # Exécution hebdomadaire le mercredi à minuit
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Raison de l''exécution manuelle'
+        required: false
+        default: 'Vérification de la qualité du code'
+
+jobs:
+  super-lint:
+    name: Super-Linter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v3
+        with:
+          # Profondeur complète pour l'analyse des changements
+          fetch-depth: 0
+
+      - name: Configuration du Super-Linter
+        run: |
+          echo "VALIDATE_ALL_CODEBASE=false" >> $GITHUB_ENV
+          echo "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          echo "DEFAULT_BRANCH=main" >> $GITHUB_ENV
+          echo "LINTER_RULES_PATH=.github/linters" >> $GITHUB_ENV
+          echo "VALIDATE_TERRAFORM=true" >> $GITHUB_ENV
+          echo "VALIDATE_KUBERNETES=true" >> $GITHUB_ENV
+          echo "VALIDATE_YAML=true" >> $GITHUB_ENV
+          echo "VALIDATE_JSON=true" >> $GITHUB_ENV
+          echo "VALIDATE_MARKDOWN=true" >> $GITHUB_ENV
+          echo "VALIDATE_BASH=true" >> $GITHUB_ENV
+          echo "VALIDATE_PYTHON=true" >> $GITHUB_ENV
+          echo "VALIDATE_JAVASCRIPT=true" >> $GITHUB_ENV
+          echo "VALIDATE_DOCKERFILE=true" >> $GITHUB_ENV
+          echo "VALIDATE_GITHUB_ACTIONS=true" >> $GITHUB_ENV
+          mkdir -p .github/linters
+
+      - name: Création de configurations spécifiques
+        run: |
+          cat > .github/linters/.markdownlint.yml << EOF
+          default: true
+          MD013:
+            line_length: 120
+          MD033: false
+          EOF
+          
+          cat > .github/linters/.python-lint << EOF
+          [MASTER]
+          ignore=CVS,tests
+          ignore-patterns=test_.*?py
+          EOF
+          
+          cat > .github/linters/.eslintrc.yml << EOF
+          env:
+            browser: true
+            es6: true
+            node: true
+          extends:
+            - eslint:recommended
+          parserOptions:
+            ecmaVersion: 2018
+            sourceType: module
+          root: true
+          EOF
+
+      - name: Exécution de Super-Linter
+        id: lint
+        uses: github/super-linter@v5
+        env:
+          VALIDATE_ALL_CODEBASE: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: main
+          LINTER_RULES_PATH: .github/linters
+          VALIDATE_TERRAFORM: true
+          VALIDATE_KUBERNETES: true
+          VALIDATE_YAML: true
+          VALIDATE_JSON: true
+          VALIDATE_MARKDOWN: true
+          VALIDATE_BASH: true
+          VALIDATE_PYTHON: true
+          VALIDATE_JAVASCRIPT: true
+          VALIDATE_DOCKERFILE: true
+          VALIDATE_GITHUB_ACTIONS: true
+          LOG_LEVEL: NOTICE
+          OUTPUT_DETAILS: detailed
+          OUTPUT_FORMAT: sarif
+          SARIF_REPORTER: true
+          REPORT_SARIF_FILE: super-linter-report.sarif
+          FILTER_REGEX_INCLUDE: .*
+          FILTER_REGEX_EXCLUDE: (.*\/node_modules\/.*|.*\/\.git\/.*)
+
+      - name: Téléversement du rapport SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: super-linter-report.sarif
+          category: super-linter
+
+      - name: Génération d'un rapport Markdown
+        if: always()
+        run: |
+          mkdir -p reports
+          echo "# Rapport Super-Linter" > reports/super-linter-report.md
+          echo "" >> reports/super-linter-report.md
+          echo "Date d'exécution: $(date)" >> reports/super-linter-report.md
+          echo "" >> reports/super-linter-report.md
+          
+          if [ "${{ steps.lint.outcome }}" == "success" ]; then
+            echo "✅ **Résultat: Succès**" >> reports/super-linter-report.md
+            echo "" >> reports/super-linter-report.md
+            echo "Aucun problème détecté dans le code." >> reports/super-linter-report.md
+          else
+            echo "❌ **Résultat: Échec**" >> reports/super-linter-report.md
+            echo "" >> reports/super-linter-report.md
+            echo "Des problèmes ont été détectés dans le code. Consultez les détails dans le rapport SARIF." >> reports/super-linter-report.md
+            
+            # Création d'une issue si des problèmes sont détectés
+            echo "::set-output name=create_issue::true"
+          fi
+
+      - name: Téléchargement du rapport
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: linter-reports
+          path: reports/
+          retention-days: 90
+
+      - name: Création d'une issue pour les problèmes détectés
+        if: failure() && steps.lint.outcome == 'failure'
+        uses: peter-evans/create-issue-from-file@v4
+        with:
+          title: "🔍 Problèmes de qualité de code détectés par Super-Linter"
+          content-filepath: reports/super-linter-report.md
+          labels: code-quality, linting, maintenance, automation
+          assignees: Casius999
