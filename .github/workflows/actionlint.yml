@@ -1,0 +1,70 @@
+name: Actionlint - Validation des workflows
+
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  schedule:
+    - cron: '0 0 * * 1'  # Exécution hebdomadaire le lundi à minuit
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Raison de l''exécution manuelle'
+        required: false
+        default: 'Vérification périodique'
+
+jobs:
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v3
+        
+      - name: Installation d'Actionlint
+        run: |
+          bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          echo "::add-path::${HOME}/bin"
+        
+      - name: Vérification des workflows avec Actionlint
+        id: actionlint
+        run: |
+          mkdir -p reports
+          actionlint -color -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}%0A```%0A{{$err.Snippet}}%0A```%0A{{end}}' \
+            | tee reports/actionlint-report.txt
+          
+          if [ -s reports/actionlint-report.txt ]; then
+            echo "::set-output name=has_errors::true"
+            echo "Des erreurs ont été détectées dans les workflows."
+          else
+            echo "::set-output name=has_errors::false"
+            echo "Aucune erreur détectée dans les workflows."
+          fi
+
+      - name: Enregistrement des problèmes détectés
+        if: steps.actionlint.outputs.has_errors == 'true'
+        run: |
+          echo "## Problèmes détectés dans les workflows GitHub Actions" > reports/actionlint-summary.md
+          echo "" >> reports/actionlint-summary.md
+          echo "Des problèmes ont été détectés dans les workflows GitHub Actions. Veuillez corriger les erreurs suivantes:" >> reports/actionlint-summary.md
+          echo "" >> reports/actionlint-summary.md
+          cat reports/actionlint-report.txt >> reports/actionlint-summary.md
+
+      - name: Création d'une issue pour les erreurs détectées
+        if: steps.actionlint.outputs.has_errors == 'true'
+        uses: peter-evans/create-issue-from-file@v4
+        with:
+          title: "⚠️ Problèmes détectés dans les workflows GitHub Actions"
+          content-filepath: reports/actionlint-summary.md
+          labels: bug, automation, workflow, ci-cd
+          assignees: Casius999
+
+      - name: Téléchargement du rapport
+        uses: actions/upload-artifact@v3
+        with:
+          name: actionlint-report
+          path: reports/
+          retention-days: 30
