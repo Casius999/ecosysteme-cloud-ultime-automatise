@@ -47,6 +47,24 @@ chmod +x scripts/deploy_infrastructure.sh
 ./scripts/deploy_infrastructure.sh
 ```
 
+## 🚀 DÉPLOIEMENT EN PRODUCTION
+
+Pour lancer le pipeline de déploiement en production :
+
+1. **Via l'interface GitHub** :
+   - Accédez à l'onglet "Actions" du dépôt
+   - Sélectionnez le workflow "Ultimate Pipeline CI/CD"
+   - Cliquez sur "Run workflow"
+   - Choisissez "prod" dans le menu déroulant "environment"
+   - Cliquez sur le bouton vert "Run workflow"
+
+2. **Via le terminal** (nécessite GitHub CLI) :
+   ```bash
+   gh workflow run ultimate-pipeline.yml --ref main -f environment=prod
+   ```
+
+Pour plus de détails sur le pipeline de déploiement, consultez la [Documentation du Pipeline](./PIPELINE.md).
+
 ## Table des matières
 
 1. [Infrastructure as Code (IaC)](#1-infrastructure-as-code-iac--provisionnement-multi-cloud-et-multi-région)
