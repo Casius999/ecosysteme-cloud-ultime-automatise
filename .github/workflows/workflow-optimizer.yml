@@ -1,0 +1,461 @@
+name: Workflow Optimizer - Amélioration automatique des CI/CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_workflows:
+        description: 'Workflows à analyser (séparés par des virgules ou "all" pour tous)'
+        required: false
+        default: 'all'
+      auto_fix:
+        description: 'Appliquer automatiquement les corrections'
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    - cron: '0 0 * * 0'  # Exécution hebdomadaire le dimanche à minuit
+
+jobs:
+  analyze-workflows:
+    name: Analyser et Optimiser les Workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Configuration de l'environnement
+        run: |
+          mkdir -p reports
+          mkdir -p .github/optimizer
+          
+          # Déterminer les workflows à analyser
+          if [ "${{ github.event.inputs.target_workflows }}" = "all" ] || [ -z "${{ github.event.inputs.target_workflows }}" ]; then
+            echo "TARGET_WORKFLOWS=all" >> $GITHUB_ENV
+          else
+            echo "TARGET_WORKFLOWS=${{ github.event.inputs.target_workflows }}" >> $GITHUB_ENV
+          fi
+          
+          # Configuration de l'auto-correction
+          if [ "${{ github.event.inputs.auto_fix }}" = "true" ]; then
+            echo "AUTO_FIX=true" >> $GITHUB_ENV
+          else 
+            echo "AUTO_FIX=false" >> $GITHUB_ENV
+          fi
+      
+      - name: Inventaire des workflows
+        id: inventory
+        run: |
+          echo "## Inventaire des workflows GitHub Actions" > reports/workflow-inventory.md
+          echo "" >> reports/workflow-inventory.md
+          
+          if [ ! -d ".github/workflows" ]; then
+            echo "❌ Aucun workflow trouvé" >> reports/workflow-inventory.md
+            echo "WORKFLOWS_FOUND=false" >> $GITHUB_ENV
+            echo "::set-output name=workflows_found::false"
+            exit 0
+          fi
+          
+          WORKFLOWS=()
+          
+          if [ "$TARGET_WORKFLOWS" = "all" ]; then
+            for workflow in .github/workflows/*.yml; do
+              if [ -f "$workflow" ]; then
+                WORKFLOWS+=("$(basename $workflow)")
+              fi
+            done
+          else
+            IFS=',' read -ra WORKFLOW_LIST <<< "$TARGET_WORKFLOWS"
+            for workflow in "${WORKFLOW_LIST[@]}"; do
+              workflow_file=".github/workflows/${workflow// /}.yml"
+              if [ -f "$workflow_file" ]; then
+                WORKFLOWS+=("$(basename $workflow_file)")
+              fi
+            done
+          fi
+          
+          if [ ${#WORKFLOWS[@]} -eq 0 ]; then
+            echo "❌ Aucun workflow cible trouvé" >> reports/workflow-inventory.md
+            echo "WORKFLOWS_FOUND=false" >> $GITHUB_ENV
+            echo "::set-output name=workflows_found::false"
+            exit 0
+          fi
+          
+          echo "Workflows trouvés:" >> reports/workflow-inventory.md
+          for workflow in "${WORKFLOWS[@]}"; do
+            echo "- $workflow" >> reports/workflow-inventory.md
+          done
+          
+          # Sauvegarder la liste pour les étapes suivantes
+          echo "${WORKFLOWS[@]}" > .github/optimizer/workflows.txt
+          echo "WORKFLOWS_FOUND=true" >> $GITHUB_ENV
+          echo "::set-output name=workflows_found::true"
+      
+      - name: Installation des dépendances d'analyse
+        if: env.WORKFLOWS_FOUND == 'true'
+        run: |
+          # Installation des outils nécessaires
+          pip install pyyaml
+          
+          # Créer un script d'analyse
+          cat > .github/optimizer/analyze_workflow.py << 'EOF'
+#!/usr/bin/env python3
+import sys
+import yaml
+import json
+import os
+from pathlib import Path
+
+def analyze_workflow(workflow_path):
+    """Analyse un workflow GitHub Actions et propose des optimisations."""
+    with open(workflow_path, 'r') as f:
+        try:
+            content = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            return {
+                "status": "error",
+                "message": f"Erreur lors de l'analyse du YAML: {str(e)}"
+            }
+    
+    issues = []
+    optimizations = []
+    
+    # Vérifier si le workflow est bien structuré
+    if 'name' not in content:
+        issues.append("Le workflow n'a pas de nom défini")
+    
+    if 'jobs' not in content:
+        issues.append("Le workflow ne contient pas de jobs")
+        return {
+            "status": "error",
+            "message": "Structure de workflow invalide",
+            "issues": issues,
+            "optimizations": []
+        }
+    
+    # Analyser chaque job
+    for job_id, job in content.get('jobs', {}).items():
+        # Vérifier si le job a un runner spécifié
+        if 'runs-on' not in job:
+            issues.append(f"Le job '{job_id}' n'a pas de runner spécifié")
+        
+        # Vérifier les timeouts
+        if 'timeout-minutes' not in job:
+            optimizations.append({
+                "type": "timeout",
+                "job": job_id,
+                "description": f"Ajouter un timeout au job '{job_id}' pour éviter les exécutions bloquées",
+                "fix": {
+                    "path": ["jobs", job_id, "timeout-minutes"],
+                    "value": 60  # Valeur par défaut de 60 minutes
+                }
+            })
+        
+        # Vérifier si checkout est utilisé avec fetch-depth
+        steps = job.get('steps', [])
+        has_checkout = False
+        for i, step in enumerate(steps):
+            if step.get('uses', '').startswith('actions/checkout@'):
+                has_checkout = True
+                if 'with' not in step or 'fetch-depth' not in step.get('with', {}):
+                    optimizations.append({
+                        "type": "checkout",
+                        "job": job_id,
+                        "step": i,
+                        "description": f"Optimiser le checkout dans le job '{job_id}' en ajoutant fetch-depth: 1",
+                        "fix": {
+                            "path": ["jobs", job_id, "steps", i, "with", "fetch-depth"],
+                            "value": 1
+                        }
+                    })
+        
+        # Vérifier si des actions de cache sont utilisées
+        has_cache = any('cache' in step.get('uses', '') for step in steps)
+        if not has_cache and has_checkout:
+            # Identifier le langage pour suggérer un cache approprié
+            uses_python = any('python' in step.get('uses', '') or 'pip' in str(step) for step in steps)
+            uses_node = any('node' in step.get('uses', '') or 'npm' in str(step) or 'yarn' in str(step) for step in steps)
+            
+            if uses_python:
+                optimizations.append({
+                    "type": "cache",
+                    "job": job_id,
+                    "description": f"Ajouter un cache pour Python dans le job '{job_id}'",
+                    "fix": {
+                        "path": ["jobs", job_id, "steps"],
+                        "value": {
+                            "uses": "actions/cache@v3",
+                            "with": {
+                                "path": "~/.cache/pip",
+                                "key": "${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}",
+                                "restore-keys": "${{ runner.os }}-pip-"
+                            }
+                        },
+                        "position": 1  # Après checkout
+                    }
+                })
+            elif uses_node:
+                optimizations.append({
+                    "type": "cache",
+                    "job": job_id,
+                    "description": f"Ajouter un cache pour Node.js dans le job '{job_id}'",
+                    "fix": {
+                        "path": ["jobs", job_id, "steps"],
+                        "value": {
+                            "uses": "actions/cache@v3",
+                            "with": {
+                                "path": "~/.npm",
+                                "key": "${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}",
+                                "restore-keys": "${{ runner.os }}-node-"
+                            }
+                        },
+                        "position": 1  # Après checkout
+                    }
+                })
+    
+    # Analyser la structure globale
+    if 'on' in content:
+        triggers = content['on']
+        if isinstance(triggers, dict) and 'schedule' in triggers:
+            # Vérifier si un schedule est défini sans workflow_dispatch
+            if 'workflow_dispatch' not in triggers:
+                optimizations.append({
+                    "type": "trigger",
+                    "description": "Ajouter workflow_dispatch pour permettre l'exécution manuelle",
+                    "fix": {
+                        "path": ["on", "workflow_dispatch"],
+                        "value": {}
+                    }
+                })
+    
+    return {
+        "status": "success",
+        "issues": issues,
+        "optimizations": optimizations
+    }
+
+def apply_fixes(workflow_path, optimizations):
+    """Applique les correctifs au workflow."""
+    with open(workflow_path, 'r') as f:
+        content = yaml.safe_load(f)
+    
+    for opt in optimizations:
+        if 'fix' in opt:
+            fix = opt['fix']
+            path = fix['path']
+            value = fix['value']
+            
+            # Navigation jusqu'au parent de la clé à modifier
+            current = content
+            for i in range(len(path) - 1):
+                if isinstance(path[i], int) or path[i].isdigit():
+                    idx = int(path[i])
+                    if idx >= len(current):
+                        # Impossible d'appliquer cette correction
+                        continue
+                    current = current[idx]
+                else:
+                    if path[i] not in current:
+                        current[path[i]] = {} if i < len(path) - 2 else []
+                    current = current[path[i]]
+            
+            # Ajouter ou modifier la valeur
+            last_key = path[-1]
+            if isinstance(last_key, int) or last_key.isdigit():
+                idx = int(last_key)
+                if 'position' in fix:
+                    # Insertion à une position spécifique
+                    current.insert(fix['position'], value)
+                else:
+                    if idx >= len(current):
+                        current.append(value)
+                    else:
+                        current[idx] = value
+            else:
+                current[last_key] = value
+    
+    # Écriture du fichier modifié
+    with open(workflow_path, 'w') as f:
+        yaml.dump(content, f, default_flow_style=False, sort_keys=False)
+    
+    return True
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print("Usage: python analyze_workflow.py <workflow_file> [--apply]")
+        sys.exit(1)
+    
+    workflow_path = sys.argv[1]
+    apply_mode = "--apply" in sys.argv
+    
+    if not os.path.exists(workflow_path):
+        print(f"Erreur: Le fichier {workflow_path} n'existe pas")
+        sys.exit(1)
+    
+    analysis = analyze_workflow(workflow_path)
+    
+    if apply_mode and analysis["status"] == "success" and len(analysis["optimizations"]) > 0:
+        success = apply_fixes(workflow_path, analysis["optimizations"])
+        if success:
+            analysis["fixes_applied"] = True
+        else:
+            analysis["fixes_applied"] = False
+    
+    print(json.dumps(analysis, indent=2))
+EOF
+          chmod +x .github/optimizer/analyze_workflow.py
+      
+      - name: Analyse des workflows
+        if: env.WORKFLOWS_FOUND == 'true'
+        id: analysis
+        run: |
+          echo "## Rapport d'analyse des workflows" > reports/workflow-analysis.md
+          echo "" >> reports/workflow-analysis.md
+          
+          while read -r workflow; do
+            if [ -z "$workflow" ]; then continue; fi
+            
+            echo "Analyse de $workflow..." 
+            echo "### Workflow: $workflow" >> reports/workflow-analysis.md
+            echo "" >> reports/workflow-analysis.md
+            
+            # Exécuter l'analyse
+            workflow_path=".github/workflows/$workflow"
+            python .github/optimizer/analyze_workflow.py "$workflow_path" > reports/$workflow.json
+            
+            # Lire et afficher les résultats
+            ISSUES=$(jq -r '.issues | length' reports/$workflow.json)
+            OPTIMIZATIONS=$(jq -r '.optimizations | length' reports/$workflow.json)
+            
+            echo "Problèmes trouvés: $ISSUES" >> reports/workflow-analysis.md
+            echo "Optimisations possibles: $OPTIMIZATIONS" >> reports/workflow-analysis.md
+            echo "" >> reports/workflow-analysis.md
+            
+            # Lister les problèmes
+            if [ "$ISSUES" -gt 0 ]; then
+              echo "#### Problèmes détectés:" >> reports/workflow-analysis.md
+              echo "" >> reports/workflow-analysis.md
+              jq -r '.issues[]' reports/$workflow.json | while read -r issue; do
+                echo "- $issue" >> reports/workflow-analysis.md
+              done
+              echo "" >> reports/workflow-analysis.md
+            fi
+            
+            # Lister les optimisations
+            if [ "$OPTIMIZATIONS" -gt 0 ]; then
+              echo "#### Optimisations recommandées:" >> reports/workflow-analysis.md
+              echo "" >> reports/workflow-analysis.md
+              jq -r '.optimizations[] | .description' reports/$workflow.json | while read -r opt; do
+                echo "- $opt" >> reports/workflow-analysis.md
+              done
+              echo "" >> reports/workflow-analysis.md
+            fi
+            
+            # Déterminer si des corrections doivent être appliquées
+            if [ "$AUTO_FIX" = "true" ] && [ "$OPTIMIZATIONS" -gt 0 ]; then
+              echo "Application des corrections pour $workflow..."
+              python .github/optimizer/analyze_workflow.py "$workflow_path" --apply > reports/$workflow-fixed.json
+              
+              # Vérifier si les corrections ont été appliquées
+              FIXES_APPLIED=$(jq -r '.fixes_applied // false' reports/$workflow-fixed.json)
+              if [ "$FIXES_APPLIED" = "true" ]; then
+                echo "✅ Corrections appliquées automatiquement pour $workflow" >> reports/workflow-analysis.md
+                echo "" >> reports/workflow-analysis.md
+              else
+                echo "⚠️ Impossible d'appliquer certaines corrections pour $workflow" >> reports/workflow-analysis.md
+                echo "" >> reports/workflow-analysis.md
+              fi
+            fi
+          done < .github/optimizer/workflows.txt
+          
+          # Créer un résumé
+          TOTAL_WORKFLOWS=$(wc -l < .github/optimizer/workflows.txt)
+          TOTAL_ISSUES=$(jq -s 'map(.issues | length) | add // 0' reports/*.json)
+          TOTAL_OPTIMIZATIONS=$(jq -s 'map(.optimizations | length) | add // 0' reports/*.json)
+          
+          echo "## Résumé" > reports/workflow-summary.md
+          echo "" >> reports/workflow-summary.md
+          echo "- Workflows analysés: $TOTAL_WORKFLOWS" >> reports/workflow-summary.md
+          echo "- Problèmes détectés: $TOTAL_ISSUES" >> reports/workflow-summary.md
+          echo "- Optimisations possibles: $TOTAL_OPTIMIZATIONS" >> reports/workflow-summary.md
+          echo "" >> reports/workflow-summary.md
+          
+          cat reports/workflow-summary.md reports/workflow-analysis.md > reports/final-report.md
+          
+          # Définir l'output pour les étapes suivantes
+          echo "::set-output name=total_issues::$TOTAL_ISSUES"
+          echo "::set-output name=total_optimizations::$TOTAL_OPTIMIZATIONS"
+          echo "::set-output name=fixes_applied::$AUTO_FIX"
+      
+      - name: Création d'une Pull Request pour les corrections
+        if: steps.analysis.outputs.total_optimizations > 0 && env.AUTO_FIX == 'true'
+        run: |
+          # Créer une branche pour les modifications
+          BRANCH_NAME="workflow-optimizer-$(date +%Y%m%d%H%M%S)"
+          git config --global user.name "Workflow Optimizer Bot"
+          git config --global user.email "robot@example.com"
+          
+          git checkout -b $BRANCH_NAME
+          git add .github/workflows/
+          git commit -m "🔧 Optimisation automatique des workflows CI/CD
+
+          Cette Pull Request contient des optimisations automatiques pour les workflows GitHub Actions.
+          
+          Nombre d'optimisations appliquées: ${{ steps.analysis.outputs.total_optimizations }}
+          
+          _Généré automatiquement par Workflow Optimizer_"
+          
+          git push origin $BRANCH_NAME
+          
+          # Créer la Pull Request
+          gh pr create --title "🔧 Optimisation automatique des workflows CI/CD" \
+                      --body "## 🤖 Optimisations Automatiques
+          
+          Cette Pull Request contient des optimisations automatiques pour les workflows GitHub Actions, générées par le Workflow Optimizer.
+          
+          ### 📊 Statistiques
+          - Workflows analysés: $TOTAL_WORKFLOWS
+          - Problèmes détectés: ${{ steps.analysis.outputs.total_issues }}
+          - Optimisations appliquées: ${{ steps.analysis.outputs.total_optimizations }}
+          
+          ### 📝 Rapport détaillé
+          $(cat reports/workflow-analysis.md)
+          
+          ---
+          
+          ⚙️ Généré automatiquement par [Workflow Optimizer](.github/workflows/workflow-optimizer.yml)" \
+                      --label "automation,optimization,ci-cd"
+      
+      - name: Création d'une issue pour les optimisations suggérées
+        if: steps.analysis.outputs.total_optimizations > 0 && env.AUTO_FIX == 'false'
+        run: |
+          # Créer une issue avec les recommandations
+          gh issue create --title "📊 Recommandations d'optimisation des workflows CI/CD" \
+                         --body "## 🤖 Recommandations d'Optimisation
+          
+          Le Workflow Optimizer a analysé les workflows GitHub Actions et détecté plusieurs optimisations possibles.
+          
+          ### 📊 Statistiques
+          - Workflows analysés: $TOTAL_WORKFLOWS
+          - Problèmes détectés: ${{ steps.analysis.outputs.total_issues }}
+          - Optimisations possibles: ${{ steps.analysis.outputs.total_optimizations }}
+          
+          ### 📝 Rapport détaillé
+          $(cat reports/workflow-analysis.md)
+          
+          ---
+          
+          Pour appliquer automatiquement ces optimisations, exécutez le workflow 'Workflow Optimizer' avec l'option 'auto_fix' activée.
+          
+          ⚙️ Généré automatiquement par [Workflow Optimizer](.github/workflows/workflow-optimizer.yml)" \
+                         --label "automation,optimization,ci-cd" \
+                         --assignee Casius999
+      
+      - name: Téléchargement des rapports
+        if: always() && env.WORKFLOWS_FOUND == 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: workflow-optimizer-reports
+          path: reports/
+          retention-days: 90
