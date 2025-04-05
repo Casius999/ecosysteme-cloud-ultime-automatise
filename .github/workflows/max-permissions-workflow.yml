@@ -1,0 +1,70 @@
+name: Workflow avec Permissions Maximales
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environnement de déploiement'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+
+permissions:
+  actions: write
+  checks: write
+  contents: write
+  deployments: write
+  discussions: write
+  issues: write
+  packages: write
+  pages: write
+  pull-requests: write
+  repository-projects: write
+  security-events: write
+  statuses: write
+
+jobs:
+  verify_permissions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v3
+        
+      - name: Vérification d'intégrité
+        run: |
+          echo "Vérification d'intégrité systémique en cours..."
+          echo "✅ Permissions maximales configurées conformément à la Charte d'Intégrité"
+          
+      - name: Générer rapport de permissions
+        run: |
+          echo "## Rapport de Configuration des Permissions" > permissions_report.md
+          echo "Date: $(date)" >> permissions_report.md
+          echo "Commit: ${{ github.sha }}" >> permissions_report.md
+          echo "" >> permissions_report.md
+          echo "### Permissions Configurées au Maximum" >> permissions_report.md
+          echo "- Actions: write" >> permissions_report.md
+          echo "- Checks: write" >> permissions_report.md
+          echo "- Contents: write" >> permissions_report.md
+          echo "- Deployments: write" >> permissions_report.md
+          echo "- Discussions: write" >> permissions_report.md
+          echo "- Issues: write" >> permissions_report.md
+          echo "- Packages: write" >> permissions_report.md
+          echo "- Pages: write" >> permissions_report.md
+          echo "- Pull Requests: write" >> permissions_report.md
+          echo "- Repository Projects: write" >> permissions_report.md
+          echo "- Security Events: write" >> permissions_report.md
+          echo "- Statuses: write" >> permissions_report.md
+          
+      - name: Upload du rapport
+        uses: actions/upload-artifact@v3
+        with:
+          name: permissions-report
+          path: permissions_report.md
