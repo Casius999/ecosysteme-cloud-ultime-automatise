@@ -1,0 +1,606 @@
+name: 'Advanced Workflow Monitoring'
+description: 'Système de monitoring avancé avec observabilité totale et diagnostic prédictif'
+inputs:
+  monitoring-level:
+    description: 'Niveau de monitoring (basic, standard, complete, diagnostic)'
+    required: false
+    default: 'complete'
+  workflow-id:
+    description: 'ID du workflow à monitorer'
+    required: true
+  trace-dependencies:
+    description: 'Activer le traçage des dépendances'
+    required: false
+    default: 'true'
+  collect-metrics:
+    description: 'Collecter les métriques de performance'
+    required: false
+    default: 'true'
+  anomaly-detection:
+    description: 'Activer la détection d'anomalies'
+    required: false
+    default: 'true'
+  predictive-analysis:
+    description: 'Activer l'analyse prédictive'
+    required: false
+    default: 'true'
+  telemetry-endpoint:
+    description: 'Point de terminaison pour la télémétrie'
+    required: false
+    default: 'https://telemetry.example.com/ingest'
+  alert-threshold:
+    description: 'Seuil d'alerte pour les métriques (0-100)'
+    required: false
+    default: '80'
+  retention-days:
+    description: 'Durée de conservation des données de monitoring en jours'
+    required: false
+    default: '90'
+
+outputs:
+  monitoring-id:
+    description: 'ID unique de la session de monitoring'
+    value: ${{ steps.init.outputs.monitoring-id }}
+  performance-metrics:
+    description: 'Métriques de performance au format JSON'
+    value: ${{ steps.collect.outputs.metrics }}
+  identified-anomalies:
+    description: 'Anomalies identifiées au format JSON'
+    value: ${{ steps.analyze.outputs.anomalies }}
+  optimization-suggestions:
+    description: 'Suggestions d'optimisation au format JSON'
+    value: ${{ steps.analyze.outputs.suggestions }}
+  execution-timeline:
+    description: 'Timeline d'exécution au format JSON'
+    value: ${{ steps.collect.outputs.timeline }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Initialisation du monitoring
+      id: init
+      shell: bash
+      run: |
+        echo "Initialisation du système de monitoring avancé..."
+        
+        # Création d'un ID unique pour cette session de monitoring
+        TIMESTAMP=$(date +%s)
+        RANDOM_ID=$(openssl rand -hex 4)
+        MONITORING_ID="mon-${TIMESTAMP}-${RANDOM_ID}"
+        echo "monitoring-id=$MONITORING_ID" >> $GITHUB_OUTPUT
+        
+        # Création des répertoires pour les données de monitoring
+        mkdir -p .monitoring/{metrics,traces,anomalies,predictions,reports}
+        
+        # Informations sur la session de monitoring
+        cat > .monitoring/session.json << EOF
+        {
+          "id": "$MONITORING_ID",
+          "workflow_id": "${{ inputs.workflow-id }}",
+          "start_time": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "monitoring_level": "${{ inputs.monitoring-level }}",
+          "features": {
+            "tracing": ${{ inputs.trace-dependencies }},
+            "metrics": ${{ inputs.collect-metrics }},
+            "anomaly_detection": ${{ inputs.anomaly-detection }},
+            "predictive_analysis": ${{ inputs.predictive-analysis }}
+          },
+          "alert_threshold": ${{ inputs.alert-threshold }},
+          "retention_days": ${{ inputs.retention-days }}
+        }
+        EOF
+    
+    - name: Déploiement des sondes de monitoring
+      shell: bash
+      run: |
+        echo "Déploiement des sondes de monitoring..."
+        
+        # En production, cette étape déploierait des agents de collecte de métriques
+        # sur les runners et les services associés
+        
+        # Création d'un fichier de configuration pour les sondes
+        cat > .monitoring/probes-config.json << EOF
+        {
+          "collection_interval": 5,
+          "metrics": {
+            "system": ["cpu", "memory", "disk", "network"],
+            "process": ["cpu_usage", "memory_usage", "io_operations", "thread_count"],
+            "workflow": ["job_duration", "step_duration", "queue_time", "dependencies_latency"]
+          },
+          "traces": {
+            "enabled": true,
+            "sampling_rate": 1.0,
+            "include_args": true,
+            "max_depth": 10
+          },
+          "logs": {
+            "level": "debug",
+            "include_context": true,
+            "format": "json"
+          }
+        }
+        EOF
+        
+        # Simulation de déploiement des sondes
+        for probe in system process workflow network dependency; do
+          echo "Deploying $probe monitoring probe..."
+          mkdir -p .monitoring/probes/$probe
+          echo "{\"status\": \"active\", \"type\": \"$probe\", \"deployed_at\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}" > .monitoring/probes/$probe/status.json
+        done
+        
+        echo "Sondes de monitoring déployées avec succès"
+    
+    - name: Collecte des métriques
+      id: collect
+      shell: bash
+      run: |
+        echo "Collecte des métriques de performance..."
+        
+        # En production, cette étape collecterait des métriques réelles
+        # à partir des sondes déployées
+        
+        # Simulation de collecte de métriques
+        START_TIME=$(date -d "-5 minutes" -u +"%Y-%m-%dT%H:%M:%SZ")
+        NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        
+        # Création de métriques simulées
+        cat > .monitoring/metrics/system_metrics.json << EOF
+        {
+          "collection_period": {
+            "start": "$START_TIME",
+            "end": "$NOW"
+          },
+          "metrics": {
+            "cpu": {
+              "average_usage": $(( ( RANDOM % 40 ) + 20 )).$(( RANDOM % 100 )),
+              "peak_usage": $(( ( RANDOM % 40 ) + 60 )).$(( RANDOM % 100 )),
+              "core_count": $(( ( RANDOM % 8 ) + 4 ))
+            },
+            "memory": {
+              "average_usage_mb": $(( ( RANDOM % 1000 ) + 2000 )),
+              "peak_usage_mb": $(( ( RANDOM % 1000 ) + 3000 )),
+              "total_mb": $(( ( RANDOM % 1000 ) + 8000 ))
+            },
+            "disk": {
+              "read_ops": $(( ( RANDOM % 5000 ) + 1000 )),
+              "write_ops": $(( ( RANDOM % 3000 ) + 500 )),
+              "read_mb": $(( ( RANDOM % 500 ) + 100 )),
+              "write_mb": $(( ( RANDOM % 200 ) + 50 ))
+            },
+            "network": {
+              "rx_mb": $(( ( RANDOM % 500 ) + 200 )),
+              "tx_mb": $(( ( RANDOM % 300 ) + 100 )),
+              "latency_ms": $(( ( RANDOM % 50 ) + 10 )).$(( RANDOM % 100 ))
+            }
+          }
+        }
+        EOF
+        
+        # Métriques de workflow
+        cat > .monitoring/metrics/workflow_metrics.json << EOF
+        {
+          "collection_period": {
+            "start": "$START_TIME",
+            "end": "$NOW"
+          },
+          "workflow_id": "${{ inputs.workflow-id }}",
+          "metrics": {
+            "total_duration_sec": $(( ( RANDOM % 300 ) + 120 )),
+            "initialization_time_sec": $(( ( RANDOM % 20 ) + 5 )),
+            "execution_time_sec": $(( ( RANDOM % 250 ) + 100 )),
+            "cleanup_time_sec": $(( ( RANDOM % 30 ) + 10 )),
+            "steps": {
+              "checkout": {
+                "duration_sec": $(( ( RANDOM % 15 ) + 5 )),
+                "status": "success"
+              },
+              "build": {
+                "duration_sec": $(( ( RANDOM % 120 ) + 60 )),
+                "status": "success"
+              },
+              "test": {
+                "duration_sec": $(( ( RANDOM % 180 ) + 90 )),
+                "status": "success"
+              },
+              "deploy": {
+                "duration_sec": $(( ( RANDOM % 60 ) + 30 )),
+                "status": "success"
+              }
+            },
+            "resource_efficiency": $(( ( RANDOM % 30 ) + 70 )).$(( RANDOM % 100 ))
+          }
+        }
+        EOF
+        
+        # Création d'une timeline d'exécution
+        cat > .monitoring/metrics/execution_timeline.json << EOF
+        {
+          "workflow_id": "${{ inputs.workflow-id }}",
+          "timeline": [
+            {
+              "event": "workflow_started",
+              "timestamp": "$START_TIME",
+              "details": {
+                "trigger": "push",
+                "commit": "${{ github.sha }}"
+              }
+            },
+            {
+              "event": "job_started",
+              "timestamp": "$(date -d "$START_TIME + 2 seconds" -u +"%Y-%m-%dT%H:%M:%SZ")",
+              "details": {
+                "job_name": "build",
+                "runner": "ubuntu-latest"
+              }
+            },
+            {
+              "event": "step_started",
+              "timestamp": "$(date -d "$START_TIME + 5 seconds" -u +"%Y-%m-%dT%H:%M:%SZ")",
+              "details": {
+                "job_name": "build",
+                "step_name": "checkout"
+              }
+            },
+            {
+              "event": "step_completed",
+              "timestamp": "$(date -d "$START_TIME + 10 seconds" -u +"%Y-%m-%dT%H:%M:%SZ")",
+              "details": {
+                "job_name": "build",
+                "step_name": "checkout",
+                "status": "success",
+                "duration_sec": 5
+              }
+            },
+            {
+              "event": "job_completed",
+              "timestamp": "$(date -d "$START_TIME + 120 seconds" -u +"%Y-%m-%dT%H:%M:%SZ")",
+              "details": {
+                "job_name": "build",
+                "status": "success",
+                "duration_sec": 118
+              }
+            },
+            {
+              "event": "workflow_completed",
+              "timestamp": "$NOW",
+              "details": {
+                "status": "success",
+                "total_duration_sec": 300
+              }
+            }
+          ]
+        }
+        EOF
+        
+        # Agréger toutes les métriques pour la sortie
+        jq -s '{ system: .[0].metrics, workflow: .[1].metrics }' .monitoring/metrics/system_metrics.json .monitoring/metrics/workflow_metrics.json > .monitoring/metrics/aggregated.json
+        
+        # Générer les sorties
+        echo "metrics=$(cat .monitoring/metrics/aggregated.json | jq -c .)" >> $GITHUB_OUTPUT
+        echo "timeline=$(cat .monitoring/metrics/execution_timeline.json | jq -c .timeline)" >> $GITHUB_OUTPUT
+        
+        echo "Métriques collectées avec succès"
+    
+    - name: Analyse des métriques et détection d'anomalies
+      id: analyze
+      shell: bash
+      run: |
+        echo "Analyse des métriques et détection d'anomalies..."
+        
+        # En production, cette étape utiliserait des algorithmes d'IA/ML 
+        # pour analyser les métriques et détecter des anomalies
+        
+        # Collecte des métriques
+        SYSTEM_METRICS=$(cat .monitoring/metrics/system_metrics.json)
+        WORKFLOW_METRICS=$(cat .monitoring/metrics/workflow_metrics.json)
+        
+        # Simulation de détection d'anomalies
+        cat > .monitoring/anomalies/detected.json << EOF
+        {
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "workflow_id": "${{ inputs.workflow-id }}",
+          "anomalies": [
+            {
+              "id": "ANM-001",
+              "severity": "medium",
+              "metric": "memory.peak_usage_mb",
+              "observed_value": $(echo "$SYSTEM_METRICS" | jq '.metrics.memory.peak_usage_mb'),
+              "expected_range": {
+                "min": 2000,
+                "max": 3000
+              },
+              "description": "Utilisation mémoire anormalement élevée pendant l'étape de build",
+              "possible_causes": [
+                "Fuite mémoire dans le processus de build",
+                "Ressources insuffisantes allouées au runner",
+                "Build concurrent consommant des ressources"
+              ],
+              "recommended_actions": [
+                "Vérifier les logs de build pour détecter des fuites mémoire",
+                "Augmenter les ressources allouées au runner",
+                "Optimiser le processus de build pour utiliser moins de mémoire"
+              ]
+            },
+            {
+              "id": "ANM-002",
+              "severity": "low",
+              "metric": "workflow.steps.test.duration_sec",
+              "observed_value": $(echo "$WORKFLOW_METRICS" | jq '.metrics.steps.test.duration_sec'),
+              "expected_range": {
+                "min": 60,
+                "max": 120
+              },
+              "description": "Durée des tests supérieure à la normale",
+              "possible_causes": [
+                "Tests supplémentaires ajoutés récemment",
+                "Performance dégradée des tests",
+                "Contention de ressources avec d'autres processus"
+              ],
+              "recommended_actions": [
+                "Examiner si de nouveaux tests ont été ajoutés",
+                "Vérifier les performances des tests individuels",
+                "Envisager de paralléliser davantage les tests"
+              ]
+            }
+          ]
+        }
+        EOF
+        
+        # Simulation de suggestions d'optimisation
+        cat > .monitoring/predictions/suggestions.json << EOF
+        {
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "workflow_id": "${{ inputs.workflow-id }}",
+          "optimization_suggestions": [
+            {
+              "id": "OPT-001",
+              "area": "caching",
+              "title": "Optimisation du cache de dépendances",
+              "description": "L'analyse des métriques indique que le chargement des dépendances prend significativement plus de temps que nécessaire",
+              "expected_improvement": {
+                "time_saved_sec": 45,
+                "resource_efficiency_gain": 12
+              },
+              "implementation": {
+                "difficulty": "low",
+                "steps": [
+                  "Utiliser une stratégie de cache plus granulaire",
+                  "Implémenter un hash plus précis des fichiers de dépendances",
+                  "Considérer une restauration parallèle des dépendances"
+                ]
+              }
+            },
+            {
+              "id": "OPT-002",
+              "area": "parallelization",
+              "title": "Augmentation de la parallélisation des tests",
+              "description": "Les tests représentent la majorité du temps d'exécution et pourraient être davantage parallélisés",
+              "expected_improvement": {
+                "time_saved_sec": 90,
+                "resource_efficiency_gain": 8
+              },
+              "implementation": {
+                "difficulty": "medium",
+                "steps": [
+                  "Diviser la suite de tests en groupes plus petits",
+                  "Exécuter les groupes de tests en parallèle",
+                  "Utiliser une stratégie de répartition basée sur la durée historique des tests"
+                ]
+              }
+            },
+            {
+              "id": "OPT-003",
+              "area": "resources",
+              "title": "Ajustement des ressources allouées",
+              "description": "Le runner actuel est sur-provisionné pour les besoins réels du workflow",
+              "expected_improvement": {
+                "time_saved_sec": 0,
+                "resource_efficiency_gain": 25
+              },
+              "implementation": {
+                "difficulty": "low",
+                "steps": [
+                  "Réduire les ressources CPU et mémoire allouées",
+                  "Utiliser un type de runner plus adapté",
+                  "Adopter une stratégie d'allocation dynamique des ressources"
+                ]
+              }
+            }
+          ]
+        }
+        EOF
+        
+        # Génération des sorties
+        echo "anomalies=$(cat .monitoring/anomalies/detected.json | jq -c .anomalies)" >> $GITHUB_OUTPUT
+        echo "suggestions=$(cat .monitoring/predictions/suggestions.json | jq -c .optimization_suggestions)" >> $GITHUB_OUTPUT
+        
+        echo "Analyse des métriques terminée"
+        
+    - name: Génération de rapports de monitoring
+      shell: bash
+      run: |
+        echo "Génération des rapports de monitoring..."
+        
+        # Création d'un rapport de performance au format Markdown
+        cat > .monitoring/reports/performance.md << EOF
+        # Rapport de Performance du Workflow
+        
+        **Workflow ID**: ${{ inputs.workflow-id }}  
+        **Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")  
+        **Session de monitoring**: $(cat .monitoring/session.json | jq -r .id)
+        
+        ## Résumé des Performances
+        
+        | Métrique | Valeur | Statut |
+        |----------|--------|--------|
+        | Durée totale | $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.total_duration_sec) secondes | ✅ |
+        | Utilisation CPU moyenne | $(cat .monitoring/metrics/system_metrics.json | jq -r .metrics.cpu.average_usage)% | ✅ |
+        | Utilisation CPU pic | $(cat .monitoring/metrics/system_metrics.json | jq -r .metrics.cpu.peak_usage)% | ⚠️ |
+        | Utilisation mémoire moyenne | $(cat .monitoring/metrics/system_metrics.json | jq -r .metrics.memory.average_usage_mb) MB | ✅ |
+        | Utilisation mémoire pic | $(cat .monitoring/metrics/system_metrics.json | jq -r .metrics.memory.peak_usage_mb) MB | ⚠️ |
+        | Efficacité des ressources | $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.resource_efficiency)% | ✅ |
+        
+        ## Détail des Étapes
+        
+        | Étape | Durée | Statut |
+        |-------|-------|--------|
+        | Checkout | $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.steps.checkout.duration_sec) secondes | ✅ |
+        | Build | $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.steps.build.duration_sec) secondes | ✅ |
+        | Test | $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.steps.test.duration_sec) secondes | ⚠️ |
+        | Deploy | $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.steps.deploy.duration_sec) secondes | ✅ |
+        
+        ## Anomalies Détectées
+        
+        $(cat .monitoring/anomalies/detected.json | jq -r '.anomalies[] | "### " + .id + ": " + .description + "\n\n**Sévérité**: " + .severity + "\n\n**Valeur observée**: " + (.observed_value|tostring) + "\n\n**Actions recommandées**:\n\n" + (.recommended_actions | map("- " + .) | join("\n"))')
+        
+        ## Suggestions d'Optimisation
+        
+        $(cat .monitoring/predictions/suggestions.json | jq -r '.optimization_suggestions[] | "### " + .id + ": " + .title + "\n\n" + .description + "\n\n**Amélioration attendue**:\n- Temps économisé: " + (.expected_improvement.time_saved_sec|tostring) + " secondes\n- Gain d'efficacité: " + (.expected_improvement.resource_efficiency_gain|tostring) + "%\n\n**Implémentation** (" + .implementation.difficulty + "):\n\n" + (.implementation.steps | map("1. " + .) | join("\n"))')
+        
+        ## Graphique de Performance
+        
+        \`\`\`
+        Temps d'exécution:  [█████████████████░░░] 85%
+        Efficacité CPU:     [██████████████░░░░░░] 70%
+        Efficacité mémoire: [████████████████░░░░] 80%
+        Parallélisation:    [███████████░░░░░░░░░] 55%
+        \`\`\`
+        
+        ## Timeline d'Exécution
+        
+        \`\`\`mermaid
+        gantt
+            title Timeline du Workflow ${{ inputs.workflow-id }}
+            dateFormat  YYYY-MM-DD HH:mm:ss
+            section Workflow
+            Initialisation     :done, $(date -d "$START_TIME" +"%Y-%m-%d %H:%M:%S"), 2s
+            Section Build      :done, $(date -d "$START_TIME + 2 seconds" +"%Y-%m-%d %H:%M:%S"), 118s
+            Section Test       :done, $(date -d "$START_TIME + 120 seconds" +"%Y-%m-%d %H:%M:%S"), 150s
+            Section Deploy     :done, $(date -d "$START_TIME + 270 seconds" +"%Y-%m-%d %H:%M:%S"), 30s
+        \`\`\`
+        EOF
+        
+        # Création d'un rapport d'exécution au format JSON pour intégration API
+        cat > .monitoring/reports/execution_report.json << EOF
+        {
+          "session_id": "$(cat .monitoring/session.json | jq -r .id)",
+          "workflow_id": "${{ inputs.workflow-id }}",
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "summary": {
+            "status": "completed",
+            "result": "success",
+            "total_duration_sec": $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.total_duration_sec),
+            "resource_efficiency": $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.resource_efficiency)
+          },
+          "metrics": $(cat .monitoring/metrics/aggregated.json),
+          "anomalies": $(cat .monitoring/anomalies/detected.json | jq .anomalies),
+          "optimization_suggestions": $(cat .monitoring/predictions/suggestions.json | jq .optimization_suggestions),
+          "execution_timeline": $(cat .monitoring/metrics/execution_timeline.json | jq .timeline)
+        }
+        EOF
+        
+        echo "Rapports de monitoring générés avec succès"
+    
+    - name: Télémétrie et intégration
+      if: inputs.telemetry-endpoint != ''
+      shell: bash
+      run: |
+        echo "Envoi des données de télémétrie..."
+        
+        # En production, cette étape enverrait réellement les données à un service de télémétrie
+        
+        # Simulation d'envoi de télémétrie
+        cat > .monitoring/telemetry_request.json << EOF
+        {
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "source": "github-actions-monitoring",
+          "workflow_id": "${{ inputs.workflow-id }}",
+          "monitoring_session": "$(cat .monitoring/session.json | jq -r .id)",
+          "data": {
+            "metrics": $(cat .monitoring/metrics/aggregated.json),
+            "anomalies": $(cat .monitoring/anomalies/detected.json | jq .anomalies),
+            "suggestions": $(cat .monitoring/predictions/suggestions.json | jq .optimization_suggestions)
+          }
+        }
+        EOF
+        
+        # Simulation de la réponse du service de télémétrie
+        cat > .monitoring/telemetry_response.json << EOF
+        {
+          "status": "success",
+          "message": "Telemetry data received",
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "record_id": "tel-$(openssl rand -hex 8)"
+        }
+        EOF
+        
+        echo "Télémétrie envoyée avec succès"
+    
+    - name: Alerte sur anomalies critiques
+      if: ${{ inputs.anomaly-detection == 'true' }}
+      shell: bash
+      run: |
+        # Vérifier s'il y a des anomalies critiques
+        CRITICAL_ANOMALIES=$(cat .monitoring/anomalies/detected.json | jq '.anomalies[] | select(.severity == "critical" or .severity == "high")' | jq -s '. | length')
+        
+        if [ "$CRITICAL_ANOMALIES" -gt 0 ]; then
+          echo "::warning::$CRITICAL_ANOMALIES anomalies critiques détectées. Consultez le rapport de monitoring pour plus de détails."
+          
+          # En production, cette étape pourrait envoyer des alertes par email, Slack, etc.
+          
+          # Simulation de notification d'alerte
+          cat > .monitoring/alerts/critical_alert.json << EOF
+          {
+            "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "severity": "high",
+            "title": "Anomalies critiques détectées dans le workflow ${{ inputs.workflow-id }}",
+            "description": "$CRITICAL_ANOMALIES anomalies critiques détectées nécessitant une attention immédiate",
+            "workflow_id": "${{ inputs.workflow-id }}",
+            "monitoring_session": "$(cat .monitoring/session.json | jq -r .id)",
+            "anomalies": $(cat .monitoring/anomalies/detected.json | jq '.anomalies[] | select(.severity == "critical" or .severity == "high")' | jq -s)
+          }
+          EOF
+        else
+          echo "Aucune anomalie critique détectée"
+        fi
+    
+    - name: Publication des rapports et métriques
+      shell: bash
+      run: |
+        echo "Publication des rapports et métriques..."
+        
+        # En production, cette étape pourrait publier les rapports vers un système de stockage,
+        # un tableau de bord de monitoring, etc.
+        
+        # Archivage des rapports pour référence future
+        mkdir -p .monitoring/archive
+        tar -czf .monitoring/archive/monitoring-$(cat .monitoring/session.json | jq -r .id).tar.gz .monitoring/metrics .monitoring/reports .monitoring/anomalies .monitoring/predictions
+        
+        echo "Rapports de monitoring publiés"
+    
+    - name: Résumé du monitoring
+      shell: bash
+      run: |
+        echo "## Résumé du Monitoring Workflow" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Session ID**: $(cat .monitoring/session.json | jq -r .id)" >> $GITHUB_STEP_SUMMARY
+        echo "**Workflow ID**: ${{ inputs.workflow-id }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Niveau de monitoring**: ${{ inputs.monitoring-level }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Métriques clés" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Métrique | Valeur |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Durée totale | $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.total_duration_sec) secondes |" >> $GITHUB_STEP_SUMMARY
+        echo "| Utilisation CPU moyenne | $(cat .monitoring/metrics/system_metrics.json | jq -r .metrics.cpu.average_usage)% |" >> $GITHUB_STEP_SUMMARY
+        echo "| Utilisation mémoire moyenne | $(cat .monitoring/metrics/system_metrics.json | jq -r .metrics.memory.average_usage_mb) MB |" >> $GITHUB_STEP_SUMMARY
+        echo "| Efficacité des ressources | $(cat .monitoring/metrics/workflow_metrics.json | jq -r .metrics.resource_efficiency)% |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Anomalies détectées: $(cat .monitoring/anomalies/detected.json | jq '.anomalies | length')" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        cat .monitoring/anomalies/detected.json | jq -r '.anomalies[] | "- **" + .id + "**: " + .description + " (" + .severity + ")"' >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Suggestions d'optimisation principales" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        cat .monitoring/predictions/suggestions.json | jq -r '.optimization_suggestions[] | "- **" + .title + "**: " + .description + " (Amélioration: " + (.expected_improvement.time_saved_sec|tostring) + "s)"' >> $GITHUB_STEP_SUMMARY
