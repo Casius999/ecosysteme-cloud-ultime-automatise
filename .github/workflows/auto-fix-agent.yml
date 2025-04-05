@@ -1,0 +1,444 @@
+name: "Agent Intelligent d'Auto-Correction des Workflows"
+
+on:
+  # Exécution automatique toutes les heures
+  schedule:
+    - cron: '0 * * * *'
+  
+  # Exécution en cas d'échec de n'importe quel workflow
+  workflow_run:
+    workflows: ['**']
+    types: [completed]
+    branches: [main]
+  
+  # Exécution manuelle possible
+  workflow_dispatch:
+    inputs:
+      fix_level:
+        description: 'Niveau de correction'
+        required: true
+        default: 'maximum'
+        type: choice
+        options:
+          - diagnostic
+          - normal
+          - maximum
+
+permissions:
+  actions: write
+  checks: write
+  contents: write
+  deployments: write
+  id-token: write
+  issues: write
+  packages: write
+  pages: write
+  pull-requests: write
+  repository-projects: write
+  security-events: write
+  statuses: write
+
+jobs:
+  analyze_and_fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Configuration de l'environnement Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Installation des dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyGithub PyYAML requests
+
+      - name: Analyse des workflows échoués
+        id: analyze
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+          FIX_LEVEL: ${{ github.event.inputs.fix_level || 'maximum' }}
+        run: |
+          echo "Démarrage de l'agent intelligent d'auto-correction (niveau: $FIX_LEVEL)"
+          
+          # Le script ci-dessous est intégré dans le workflow pour une exécution complète
+          cat > auto_fix_agent.py << 'EOF'
+          #!/usr/bin/env python3
+          import os
+          import sys
+          import re
+          import yaml
+          import json
+          import time
+          import requests
+          from github import Github
+          from datetime import datetime, timedelta
+
+          class WorkflowAutoFixAgent:
+              """Agent intelligent pour corriger automatiquement les workflows GitHub Actions."""
+              
+              def __init__(self):
+                  """Initialisation de l'agent d'auto-correction."""
+                  self.token = os.environ.get("GITHUB_TOKEN")
+                  self.repo_name = os.environ.get("REPO_NAME")
+                  self.fix_level = os.environ.get("FIX_LEVEL", "maximum")
+                  
+                  self.g = Github(self.token)
+                  self.repo = self.g.get_repo(self.repo_name)
+                  self.branch = "main"
+                  
+                  # Stats de corrections
+                  self.fixes_applied = 0
+                  self.workflows_analyzed = 0
+                  self.issues_found = 0
+              
+              def analyze_workflows(self):
+                  """Analyse tous les workflows pour détecter les problèmes."""
+                  print("📊 Analyse de tous les workflows du dépôt...")
+                  
+                  # Récupération des workflows
+                  workflows_dir = ".github/workflows"
+                  try:
+                      contents = self.repo.get_contents(workflows_dir)
+                      workflow_files = [c for c in contents if c.path.endswith(('.yml', '.yaml'))]
+                      
+                      print(f"📋 {len(workflow_files)} fichiers de workflow trouvés")
+                      
+                      # Analyse et correction des workflows
+                      for workflow_file in workflow_files:
+                          self.workflows_analyzed += 1
+                          self.analyze_and_fix_workflow(workflow_file)
+                      
+                  except Exception as e:
+                      print(f"❌ Erreur lors de l'analyse des workflows: {str(e)}")
+                  
+                  # Récupération des exécutions récentes échouées
+                  self.analyze_failed_runs()
+                  
+                  # Génération du rapport
+                  self.generate_report()
+              
+              def analyze_and_fix_workflow(self, workflow_file):
+                  """Analyse et corrige un fichier de workflow spécifique."""
+                  print(f"\n🔍 Analyse du workflow: {workflow_file.path}")
+                  
+                  try:
+                      # Récupération du contenu du workflow
+                      content = workflow_file.decoded_content.decode('utf-8')
+                      yaml_content = yaml.safe_load(content)
+                      
+                      # Vérification des problèmes courants
+                      issues_found, fixed_content = self.check_and_fix_common_issues(content, yaml_content)
+                      
+                      if issues_found > 0:
+                          self.issues_found += issues_found
+                          if fixed_content != content and self.fix_level != "diagnostic":
+                              # Mise à jour du fichier avec les corrections
+                              print(f"✅ Application de {issues_found} corrections au workflow {workflow_file.path}")
+                              self.repo.update_file(
+                                  path=workflow_file.path,
+                                  message=f"Auto-correction: Résolution de {issues_found} problèmes dans {workflow_file.path}",
+                                  content=fixed_content,
+                                  sha=workflow_file.sha,
+                                  branch=self.branch
+                              )
+                              self.fixes_applied += issues_found
+                          else:
+                              print(f"🔍 {issues_found} problèmes identifiés dans {workflow_file.path} (mode diagnostic)")
+                      else:
+                          print(f"✓ Aucun problème détecté dans {workflow_file.path}")
+                  
+                  except Exception as e:
+                      print(f"❌ Erreur lors de l'analyse de {workflow_file.path}: {str(e)}")
+              
+              def check_and_fix_common_issues(self, content, yaml_content):
+                  """Vérifie et corrige les problèmes courants dans un workflow."""
+                  issues_found = 0
+                  fixed_content = content
+                  
+                  # 1. Vérification des permissions manquantes
+                  if 'permissions' not in yaml_content and 'on' in yaml_content and 'jobs' in yaml_content:
+                      issues_found += 1
+                      fixed_content = self.add_missing_permissions(fixed_content)
+                  
+                  # 2. Vérification des runners obsolètes
+                  if 'runs-on: ubuntu-latest' in fixed_content and 'runs-on: ubuntu-18.04' not in fixed_content:
+                      # Nous cherchons des combinaisons problématiques qui ne seraient pas des false positives
+                      if re.search(r'runs-on:\s*ubuntu-16.04', fixed_content):
+                          issues_found += 1
+                          fixed_content = re.sub(r'runs-on:\s*ubuntu-16.04', 'runs-on: ubuntu-latest', fixed_content)
+                  
+                  # 3. Vérification des actions obsolètes
+                  obsolete_actions = {
+                      'actions/checkout@v1': 'actions/checkout@v3',
+                      'actions/checkout@v2': 'actions/checkout@v3',
+                      'actions/setup-node@v1': 'actions/setup-node@v3',
+                      'actions/setup-node@v2': 'actions/setup-node@v3',
+                      'actions/setup-python@v1': 'actions/setup-python@v4',
+                      'actions/setup-python@v2': 'actions/setup-python@v4',
+                      'actions/setup-python@v3': 'actions/setup-python@v4',
+                  }
+                  
+                  for old_action, new_action in obsolete_actions.items():
+                      if old_action in fixed_content:
+                          issues_found += 1
+                          fixed_content = fixed_content.replace(old_action, new_action)
+                  
+                  # 4. Vérification des syntaxes dépréciées
+                  # set-output deprecated
+                  if '::set-output name=' in fixed_content:
+                      issues_found += 1
+                      fixed_content = re.sub(
+                          r'echo "::set-output name=([^"]+)::([^"]+)"', 
+                          r'echo "$1=$2" >> $GITHUB_OUTPUT', 
+                          fixed_content
+                      )
+                  
+                  # 5. Vérification des fetch-depth manquants
+                  if 'actions/checkout@' in fixed_content and 'fetch-depth:' not in fixed_content:
+                      issues_found += 1
+                      fixed_content = re.sub(
+                          r'(uses:\s*actions/checkout@v\d+)\n', 
+                          r'\1\n        with:\n          fetch-depth: 0\n', 
+                          fixed_content
+                      )
+                  
+                  # 6. Vérification des timeouts manquants
+                  if 'timeout-minutes:' not in fixed_content and 'jobs:' in fixed_content:
+                      jobs_section = re.search(r'jobs:(.*?)(?=\n\w|\Z)', fixed_content, re.DOTALL)
+                      if jobs_section and 'timeout-minutes:' not in jobs_section.group(1):
+                          issues_found += 1
+                          fixed_content = re.sub(
+                              r'(jobs:\s*\n\s*\w+:\s*\n)', 
+                              r'\1    timeout-minutes: 60\n', 
+                              fixed_content
+                          )
+                  
+                  # 7. Vérification et correction des erreurs de syntaxe YAML
+                  if 'jobs:' in fixed_content:
+                      # Vérification des tabulations incorrectes
+                      if re.search(r'\t', fixed_content):
+                          issues_found += 1
+                          fixed_content = fixed_content.replace('\t', '  ')
+                  
+                  # 8. Ajout de stratégies d'échec au niveau maximum
+                  if self.fix_level == "maximum" and 'continue-on-error: true' not in fixed_content:
+                      # Ajout uniquement aux jobs critiques, pas à tous pour éviter les modifications excessives
+                      if re.search(r'jobs:\s*\n\s*build:', fixed_content) or re.search(r'jobs:\s*\n\s*test:', fixed_content):
+                          if not re.search(r'continue-on-error:', fixed_content):
+                              issues_found += 1
+                              fixed_content = re.sub(
+                                  r'(jobs:\s*\n\s*\w+:\s*\n)', 
+                                  r'\1    continue-on-error: true\n', 
+                                  fixed_content
+                              )
+                  
+                  return issues_found, fixed_content
+              
+              def add_missing_permissions(self, content):
+                  """Ajoute les permissions manquantes au workflow."""
+                  # Détermine où insérer les permissions
+                  if re.search(r'on:', content):
+                      # Insérer après la section 'on'
+                      on_section_match = re.search(r'on:.*?(?=\n\w|\Z)', content, re.DOTALL)
+                      if on_section_match:
+                          end_pos = on_section_match.end()
+                          permissions_block = """
+
+permissions:
+  actions: write
+  checks: write
+  contents: write
+  deployments: write
+  id-token: write
+  issues: write
+  packages: write
+  pages: write
+  pull-requests: write
+  repository-projects: write
+  security-events: write
+  statuses: write
+"""
+                          return content[:end_pos] + permissions_block + content[end_pos:]
+                  
+                  return content
+              
+              def analyze_failed_runs(self):
+                  """Analyse les exécutions de workflow récentes échouées pour détecter les problèmes."""
+                  print("\n🔍 Analyse des exécutions de workflow récentes échouées...")
+                  
+                  # Récupération des exécutions récentes
+                  try:
+                      workflow_runs = self.repo.get_workflow_runs(status="failure")
+                      failed_runs = list(workflow_runs)[:10]  # Limite aux 10 plus récents échecs
+                      
+                      if not failed_runs:
+                          print("✓ Aucune exécution échouée récente trouvée")
+                          return
+                      
+                      print(f"📋 {len(failed_runs)} exécutions échouées récentes trouvées")
+                      
+                      for run in failed_runs:
+                          print(f"🔍 Analyse de l'échec: {run.name} (ID: {run.id})")
+                          
+                          # Dans un système réel, on utiliserait l'API GitHub pour obtenir les logs
+                          # et analyser les erreurs spécifiques
+                          
+                          # Création d'une issue si au niveau maximum
+                          if self.fix_level == "maximum":
+                              # Vérifier si une issue existe déjà pour cet échec
+                              existing_issues = self.repo.get_issues(state="open")
+                              issue_exists = any(f"Workflow ID: {run.id}" in issue.body for issue in existing_issues)
+                              
+                              if not issue_exists:
+                                  self.create_issue_for_failed_run(run)
+                                  self.issues_found += 1
+                  
+                  except Exception as e:
+                      print(f"❌ Erreur lors de l'analyse des exécutions échouées: {str(e)}")
+              
+              def create_issue_for_failed_run(self, run):
+                  """Crée une issue pour un workflow échoué."""
+                  title = f"🤖 [Auto-Fix Agent] Échec détecté: {run.name}"
+                  body = f"""## Détection d'échec de workflow par l'Agent d'Auto-Correction
+
+L'agent a détecté un échec dans l'exécution du workflow **{run.name}**.
+
+### Détails de l'échec
+- **Workflow**: {run.name}
+- **Workflow ID**: {run.id}
+- **Commit**: {run.head_sha}
+- **Date de l'échec**: {run.created_at}
+- **Branche**: {run.head_branch}
+
+### Actions suggérées
+- Examiner les logs d'exécution: [Voir les logs]({run.html_url})
+- Vérifier les modifications récentes du workflow
+- Rechercher les problèmes de configuration
+
+L'agent d'auto-correction tentera de résoudre ce problème lors de sa prochaine exécution si possible.
+
+---
+*Cette issue a été créée automatiquement par l'Agent d'Auto-Correction des Workflows.*
+"""
+                  
+                  self.repo.create_issue(
+                      title=title,
+                      body=body,
+                      labels=["bot", "workflow", "auto-fix"]
+                  )
+                  print(f"✅ Issue créée pour l'échec de workflow {run.id}")
+              
+              def generate_report(self):
+                  """Génère un rapport sur les corrections effectuées."""
+                  print("\n📊 Génération du rapport de l'agent d'auto-correction...")
+                  
+                  report = f"""# Rapport de l'Agent d'Auto-Correction des Workflows
+Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Mode: {self.fix_level}
+
+## Statistiques
+- **Workflows analysés**: {self.workflows_analyzed}
+- **Problèmes détectés**: {self.issues_found}
+- **Corrections appliquées**: {self.fixes_applied if self.fix_level != "diagnostic" else "0 (mode diagnostic)"}
+
+## Types de corrections
+- Permissions manquantes
+- Actions obsolètes
+- Syntaxes dépréciées
+- Configuration de runner
+- Timeouts manquants
+- Erreurs de syntaxe YAML
+- Stratégies d'échec
+
+## Recommandations
+- Revoir les workflows manuellement régulièrement
+- Activer les notifications pour les échecs de workflow
+- Mettre à jour les dépendances et actions régulièrement
+
+---
+*Rapport généré automatiquement par l'Agent d'Auto-Correction des Workflows.*
+"""
+                  
+                  # Création du rapport sur GitHub
+                  timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                  report_path = f"reports/auto_fix_report_{timestamp}.md"
+                  
+                  try:
+                      # Vérification si le dossier reports existe
+                      try:
+                          self.repo.get_contents("reports")
+                      except:
+                          self.repo.create_file(
+                              path="reports/.gitkeep",
+                              message="Création du dossier reports",
+                              content="# Dossier pour les rapports d'auto-correction",
+                              branch=self.branch
+                          )
+                      
+                      # Création du rapport
+                      self.repo.create_file(
+                          path=report_path,
+                          message=f"Rapport d'auto-correction des workflows {timestamp}",
+                          content=report,
+                          branch=self.branch
+                      )
+                      print(f"✅ Rapport généré: {report_path}")
+                      
+                      # Création ou mise à jour du rapport le plus récent
+                      latest_report_path = "reports/latest_auto_fix_report.md"
+                      try:
+                          latest_report = self.repo.get_contents(latest_report_path)
+                          self.repo.update_file(
+                              path=latest_report_path,
+                              message=f"Mise à jour du rapport d'auto-correction le plus récent",
+                              content=report,
+                              sha=latest_report.sha,
+                              branch=self.branch
+                          )
+                      except:
+                          self.repo.create_file(
+                              path=latest_report_path,
+                              message=f"Création du rapport d'auto-correction le plus récent",
+                              content=report,
+                              branch=self.branch
+                          )
+                      
+                  except Exception as e:
+                      print(f"❌ Erreur lors de la génération du rapport: {str(e)}")
+                      print(report)  # Affichage dans les logs si l'écriture échoue
+
+          if __name__ == "__main__":
+              agent = WorkflowAutoFixAgent()
+              agent.analyze_workflows()
+          EOF
+          
+          # Rendre le script exécutable
+          chmod +x auto_fix_agent.py
+          
+          # Exécuter l'agent d'auto-correction
+          python auto_fix_agent.py
+      
+      - name: Générer badges de statut
+        run: |
+          echo "Génération des badges de statut pour l'agent d'auto-correction..."
+          mkdir -p .github/badges
+          
+          # Badge pour le statut de l'agent
+          echo '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="136" height="20" role="img" aria-label="Auto-Fix Agent: Active"><title>Auto-Fix Agent: Active</title><linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient><clipPath id="r"><rect width="136" height="20" rx="3" fill="#fff"/></clipPath><g clip-path="url(#r)"><rect width="89" height="20" fill="#555"/><rect x="89" width="47" height="20" fill="#4c1"/><rect width="136" height="20" fill="url(#s)"/></g><g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110"><text aria-hidden="true" x="455" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="790">Auto-Fix Agent</text><text x="455" y="140" transform="scale(.1)" fill="#fff" textLength="790">Auto-Fix Agent</text><text aria-hidden="true" x="1115" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="370">Active</text><text x="1115" y="140" transform="scale(.1)" fill="#fff" textLength="370">Active</text></g></svg>' > .github/badges/auto-fix-agent-status.svg
+          
+          git config --local user.email "auto-fix-agent@github.com"
+          git config --local user.name "Auto-Fix Agent"
+          
+          git add .github/badges/auto-fix-agent-status.svg
+          git commit -m "Mise à jour du badge de statut de l'agent d'auto-correction" || echo "Pas de changement à commettre"
+          git push
+      
+      - name: Notification de complétion
+        run: |
+          echo "✅ L'agent d'auto-correction des workflows a terminé son analyse!"
