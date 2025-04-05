@@ -1,0 +1,74 @@
+# Configuration Dependabot au niveau maximal - Analyse quotidienne de toutes les dépendances
+version: 2
+updates:
+  # Mise à jour des dépendances npm
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    target-branch: "main"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    assignees:
+      - "Casius999"
+    reviewers:
+      - "Casius999"
+    
+  # Mise à jour des dépendances Python (pip)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    target-branch: "main"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    assignees:
+      - "Casius999"
+    reviewers:
+      - "Casius999"
+
+  # Mise à jour des dépendances Docker
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    target-branch: "main"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    assignees:
+      - "Casius999"
+    reviewers:
+      - "Casius999"
+
+  # Mise à jour des dépendances GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    target-branch: "main"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    assignees:
+      - "Casius999"
+    reviewers:
+      - "Casius999"
