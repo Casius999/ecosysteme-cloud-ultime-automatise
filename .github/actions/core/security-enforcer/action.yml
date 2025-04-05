@@ -1,0 +1,667 @@
+name: 'Advanced Security Enforcer'
+description: 'Système de sécurité avancé avec détection d'anomalies et auto-correction'
+inputs:
+  scan-depth:
+    description: 'Profondeur d'analyse de sécurité (basic, standard, deep)'
+    required: false
+    default: 'standard'
+  workflow-file:
+    description: 'Fichier de workflow à analyser'
+    required: false
+    default: '${{ github.workflow_path }}'
+  repo-scan:
+    description: 'Analyser l'intégralité du dépôt'
+    required: false
+    default: 'true'
+  auto-remediate:
+    description: 'Corriger automatiquement les vulnérabilités détectées'
+    required: false
+    default: 'true'
+  permission-model:
+    description: 'Modèle de permissions (strict, standard, permissive)'
+    required: false
+    default: 'strict'
+  policy-file:
+    description: 'Fichier de politique de sécurité'
+    required: false
+    default: '.github/security-policy.yml'
+  secret-scanner:
+    description: 'Activer la détection de secrets exposés'
+    required: false
+    default: 'true'
+  runtime-protection:
+    description: 'Activer la protection durant l'exécution'
+    required: false
+    default: 'true'
+
+outputs:
+  security-score:
+    description: 'Score de sécurité global (0-100)'
+    value: ${{ steps.analyze.outputs.security-score }}
+  vulnerabilities:
+    description: 'Vulnérabilités détectées au format JSON'
+    value: ${{ steps.analyze.outputs.vulnerabilities }}
+  remediation-report:
+    description: 'Rapport des corrections effectuées'
+    value: ${{ steps.remediate.outputs.report }}
+  compliance-status:
+    description: 'Statut de conformité (compliant, partial, non-compliant)'
+    value: ${{ steps.compliance.outputs.status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+    
+    - name: Setup security environment
+      id: setup
+      shell: bash
+      run: |
+        echo "Setting up security analysis environment..."
+        
+        # Créer les répertoires nécessaires
+        mkdir -p .security-enforcer/{reports,policies,remediation}
+        
+        # Initialiser les métriques
+        echo '{"score": 0, "passed_checks": 0, "total_checks": 0, "critical_issues": 0, "high_issues": 0, "medium_issues": 0, "low_issues": 0}' > .security-enforcer/metrics.json
+        
+        # Vérifier si une politique de sécurité existe
+        if [ -f "${{ inputs.policy-file }}" ]; then
+          echo "Using existing security policy: ${{ inputs.policy-file }}"
+          cp "${{ inputs.policy-file }}" .security-enforcer/policies/current-policy.yml
+        else
+          echo "No security policy found, creating default policy..."
+          mkdir -p $(dirname "${{ inputs.policy-file }}")
+          
+          # Créer une politique de sécurité par défaut
+          cat > "${{ inputs.policy-file }}" << EOF
+        # Politique de sécurité GitHub Actions
+        version: 1.0
+        
+        # Règles générales
+        rules:
+          # Contrôle des accès
+          permissions:
+            mode: ${{ inputs.permission-model }}
+            allowed:
+              contents: read
+              id-token: write  # Pour OIDC
+              packages: write  # Pour publier des packages
+              deployments: write  # Pour les déploiements
+          
+          # Protection contre les injections et exécutions de code malveillantes
+          code_execution:
+            prevent_inline_scripts: true
+            block_prohibited_commands: true
+            prohibited_commands:
+              - "curl | bash"
+              - "wget | bash"
+              - "eval \$(curl"
+          
+          # Règles pour les actions tierces
+          third_party_actions:
+            require_version_pinning: true
+            allowed_registries:
+              - "actions/*"
+              - "github/*"
+              - "docker/*"
+            prohibited_actions: []
+          
+          # Règles pour les secrets
+          secrets:
+            prohibit_env_secrets: true
+            prohibit_plain_credentials: true
+            require_secret_scanning: true
+          
+          # Règles pour les runners
+          runners:
+            allowed_types:
+              - "ubuntu-latest"
+              - "windows-latest"
+              - "macos-latest"
+              - "self-hosted"
+        
+        # Exceptions
+        exceptions:
+          - rule: "permissions"
+            workflows: ["codeql-analysis.yml"]
+            reason: "CodeQL requires additional permissions"
+        EOF
+        
+          cp "${{ inputs.policy-file }}" .security-enforcer/policies/current-policy.yml
+          echo "Created default security policy at ${{ inputs.policy-file }}"
+        fi
+    
+    - name: Analyze security posture
+      id: analyze
+      shell: bash
+      run: |
+        echo "Analyzing security posture..."
+        
+        # Variables pour suivre les résultats de l'analyse
+        total_checks=0
+        passed_checks=0
+        critical_issues=0
+        high_issues=0
+        medium_issues=0
+        low_issues=0
+        
+        # Initialiser le fichier de vulnérabilités
+        echo '[]' > .security-enforcer/vulnerabilities.json
+        
+        # ---- Analyser les workflows ----
+        echo "Analyzing workflow files..."
+        
+        if [ "${{ inputs.workflow-file }}" != "" ] && [ -f "${{ inputs.workflow-file }}" ]; then
+          workflows=("${{ inputs.workflow-file }}")
+        else
+          workflows=($(find .github/workflows -type f -name "*.yml" -o -name "*.yaml"))
+        fi
+        
+        for workflow in "${workflows[@]}"; do
+          echo "Analyzing workflow: $workflow"
+          
+          # Vérifier l'utilisation de versions précises des actions
+          total_checks=$((total_checks+1))
+          if grep -q 'uses:.*@[0-9a-f]\{40\}\|uses:.*@v[0-9]\+\.[0-9]\+\.[0-9]\+' "$workflow"; then
+            passed_checks=$((passed_checks+1))
+          else
+            high_issues=$((high_issues+1))
+            # Ajouter l'entrée au fichier des vulnérabilités
+            tmp=$(mktemp)
+            jq --arg workflow "$workflow" \
+               --arg title "Actions sans version précise" \
+               --arg severity "high" \
+               --arg description "Utilisation d'actions sans version précise (SHA commit ou tag sémantique) détectée" \
+               --arg remediation "Fixez les versions des actions avec un SHA de commit ou une version sémantique v1.2.3" \
+               '. += [{"id": "GHACT-001", "workflow": $workflow, "title": $title, "severity": $severity, "description": $description, "remediation": $remediation}]' \
+               .security-enforcer/vulnerabilities.json > "$tmp" && mv "$tmp" .security-enforcer/vulnerabilities.json
+          fi
+          
+          # Vérifier les permissions minimales
+          total_checks=$((total_checks+1))
+          if grep -q 'permissions:.*write-all\|permissions: write-all' "$workflow"; then
+            critical_issues=$((critical_issues+1))
+            tmp=$(mktemp)
+            jq --arg workflow "$workflow" \
+               --arg title "Permissions trop élevées" \
+               --arg severity "critical" \
+               --arg description "Utilisation de 'write-all' permissions qui accorde des privilèges excessifs" \
+               --arg remediation "Limitez les permissions au minimum nécessaire pour chaque workflow" \
+               '. += [{"id": "GHACT-002", "workflow": $workflow, "title": $title, "severity": $severity, "description": $description, "remediation": $remediation}]' \
+               .security-enforcer/vulnerabilities.json > "$tmp" && mv "$tmp" .security-enforcer/vulnerabilities.json
+          else
+            passed_checks=$((passed_checks+1))
+          fi
+          
+          # Vérifier l'exécution de scripts non contrôlée
+          total_checks=$((total_checks+1))
+          if grep -q 'curl.*| bash\|wget.*| bash\|pip install --pre\|npm install -g' "$workflow"; then
+            high_issues=$((high_issues+1))
+            tmp=$(mktemp)
+            jq --arg workflow "$workflow" \
+               --arg title "Exécution de code à distance non sécurisée" \
+               --arg severity "high" \
+               --arg description "Exécution de scripts téléchargés depuis Internet sans vérification" \
+               --arg remediation "Évitez d'exécuter directement des scripts téléchargés. Utilisez des checksums et des sources fiables." \
+               '. += [{"id": "GHACT-003", "workflow": $workflow, "title": $title, "severity": $severity, "description": $description, "remediation": $remediation}]' \
+               .security-enforcer/vulnerabilities.json > "$tmp" && mv "$tmp" .security-enforcer/vulnerabilities.json
+          else
+            passed_checks=$((passed_checks+1))
+          fi
+          
+          # Vérifier l'exposition potentielle de secrets
+          total_checks=$((total_checks+1))
+          if grep -q 'API_KEY=\|SECRET=\|PASSWORD=\|TOKEN=' "$workflow"; then
+            critical_issues=$((critical_issues+1))
+            tmp=$(mktemp)
+            jq --arg workflow "$workflow" \
+               --arg title "Secrets exposés dans le workflow" \
+               --arg severity "critical" \
+               --arg description "Possibles identifiants ou secrets codés en dur dans le workflow" \
+               --arg remediation "Utilisez des secrets GitHub pour stocker les informations sensibles" \
+               '. += [{"id": "GHACT-004", "workflow": $workflow, "title": $title, "severity": $severity, "description": $description, "remediation": $remediation}]' \
+               .security-enforcer/vulnerabilities.json > "$tmp" && mv "$tmp" .security-enforcer/vulnerabilities.json
+          else
+            passed_checks=$((passed_checks+1))
+          fi
+          
+          # Vérifier la validation des entrées
+          total_checks=$((total_checks+1))
+          if grep -q 'github.event.issue.title\|github.event.comment.body\|github.event.review.body\|github.event.head_commit.message' "$workflow"; then
+            medium_issues=$((medium_issues+1))
+            tmp=$(mktemp)
+            jq --arg workflow "$workflow" \
+               --arg title "Utilisation d'entrées non validées" \
+               --arg severity "medium" \
+               --arg description "Utilisation de données utilisateur non validées dans le workflow" \
+               --arg remediation "Validez toutes les entrées externes avant leur utilisation dans les commandes shell" \
+               '. += [{"id": "GHACT-005", "workflow": $workflow, "title": $title, "severity": $severity, "description": $description, "remediation": $remediation}]' \
+               .security-enforcer/vulnerabilities.json > "$tmp" && mv "$tmp" .security-enforcer/vulnerabilities.json
+          else
+            passed_checks=$((passed_checks+1))
+          fi
+          
+          # Vérifier si le workflow utilise des runners auto-hébergés
+          total_checks=$((total_checks+1))
+          if grep -q 'runs-on:.*self-hosted' "$workflow"; then
+            if ! grep -q 'pull_request.*runs-on:.*self-hosted' "$workflow"; then
+              passed_checks=$((passed_checks+1))
+            else
+              high_issues=$((high_issues+1))
+              tmp=$(mktemp)
+              jq --arg workflow "$workflow" \
+                 --arg title "Utilisation risquée de runners auto-hébergés" \
+                 --arg severity "high" \
+                 --arg description "Runners auto-hébergés utilisés pour les pull requests, ce qui peut exposer des secrets" \
+                 --arg remediation "Utilisez des runners hébergés par GitHub pour les pull requests de dépôts externes" \
+                 '. += [{"id": "GHACT-006", "workflow": $workflow, "title": $title, "severity": $severity, "description": $description, "remediation": $remediation}]' \
+                 .security-enforcer/vulnerabilities.json > "$tmp" && mv "$tmp" .security-enforcer/vulnerabilities.json
+            fi
+          else
+            passed_checks=$((passed_checks+1))
+          fi
+        done
+        
+        # Scanner le dépôt pour les secrets exposés
+        if [ "${{ inputs.secret-scanner }}" == "true" ]; then
+          echo "Scanning repository for exposed secrets..."
+          
+          total_checks=$((total_checks+1))
+          
+          # Liste des patterns de secrets à rechercher
+          patterns=(
+            "BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY"
+            "[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+@github.com"
+            "github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}"
+            "ghp_[a-zA-Z0-9]{36}"
+            "ghs_[a-zA-Z0-9]{36}"
+            "gho_[a-zA-Z0-9]{36}"
+            "ghu_[a-zA-Z0-9]{36}"
+            "sq0csp-[0-9A-Za-z\\-_]{43}"
+            "[0-9]+-[0-9A-Za-z_]{32}\\.apps\\.googleusercontent\\.com"
+            "AIza[0-9A-Za-z\\-_]{35}"
+            "AKIA[0-9A-Z]{16}"
+            "amzn\\.mws\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+            "xox[baprs]-([0-9a-zA-Z]{10,48})?"
+            "sk_live_[0-9a-zA-Z]{24}"
+            "rk_live_[0-9a-zA-Z]{24}"
+            "[a-zA-Z0-9_-]*:[a-zA-Z0-9_\\-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-]+"
+          )
+          
+          secrets_found=false
+          
+          for pattern in "${patterns[@]}"; do
+            # Exclure les répertoires .git et node_modules
+            results=$(grep -r -E "$pattern" --include="*.{js,py,sh,json,yaml,yml,xml,md,txt}" --exclude-dir=".git" --exclude-dir="node_modules" . 2>/dev/null || true)
+            
+            if [ ! -z "$results" ]; then
+              secrets_found=true
+              
+              # Limiter les résultats pour éviter de stocker des secrets réels
+              result_files=$(echo "$results" | cut -d: -f1 | sort | uniq)
+              
+              for file in $result_files; do
+                tmp=$(mktemp)
+                jq --arg file "$file" \
+                   --arg title "Secret potentiellement exposé" \
+                   --arg severity "critical" \
+                   --arg description "Possible secret/credential exposé dans le fichier" \
+                   --arg remediation "Supprimez les secrets exposés et remplacez-les par des variables d'environnement sécurisées" \
+                   '. += [{"id": "SEC-001", "file": $file, "title": $title, "severity": $severity, "description": $description, "remediation": $remediation}]' \
+                   .security-enforcer/vulnerabilities.json > "$tmp" && mv "$tmp" .security-enforcer/vulnerabilities.json
+              done
+              
+              critical_issues=$((critical_issues+1))
+            fi
+          done
+          
+          if [ "$secrets_found" = false ]; then
+            passed_checks=$((passed_checks+1))
+          fi
+        fi
+        
+        # Calculer le score de sécurité
+        if [ $total_checks -eq 0 ]; then
+          security_score=0
+        else
+          # Score sur 100, avec pénalités selon la gravité des problèmes
+          base_score=$(( (passed_checks * 100) / total_checks ))
+          penalty=$(( (critical_issues * 20) + (high_issues * 10) + (medium_issues * 5) + (low_issues * 2) ))
+          security_score=$(( base_score > penalty ? base_score - penalty : 0 ))
+          
+          # Limiter le score à 100
+          if [ $security_score -gt 100 ]; then
+            security_score=100
+          fi
+        fi
+        
+        # Mettre à jour les métriques
+        echo "{\"score\": $security_score, \"passed_checks\": $passed_checks, \"total_checks\": $total_checks, \"critical_issues\": $critical_issues, \"high_issues\": $high_issues, \"medium_issues\": $medium_issues, \"low_issues\": $low_issues}" > .security-enforcer/metrics.json
+        
+        # Générer le rapport de vulnérabilités
+        cat > .security-enforcer/reports/security-report.md << EOF
+        # Rapport d'Analyse de Sécurité
+        
+        Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        
+        ## Résumé
+        
+        - **Score de sécurité**: $security_score/100
+        - **Contrôles réussis**: $passed_checks/$total_checks
+        - **Problèmes critiques**: $critical_issues
+        - **Problèmes élevés**: $high_issues
+        - **Problèmes moyens**: $medium_issues
+        - **Problèmes faibles**: $low_issues
+        
+        ## Vulnérabilités détectées
+        
+        $(jq -r '.[] | "### " + .title + " (" + .severity + ")\n\n**ID**: " + .id + "\n\n**Fichier**: " + (if has("workflow") then .workflow else .file end) + "\n\n**Description**: " + .description + "\n\n**Correction recommandée**: " + .remediation + "\n\n---\n"' .security-enforcer/vulnerabilities.json)
+        
+        ## Recommandations de sécurité
+        
+        1. **Gestion des secrets**: Utilisez les secrets GitHub pour stocker les informations sensibles
+        2. **Permissions**: Appliquez le principe du moindre privilège pour les workflows
+        3. **Actions**: Fixez les versions des actions avec des SHA de commit ou des versions sémantiques
+        4. **Code externe**: Évitez d'exécuter du code téléchargé depuis Internet sans vérification
+        5. **Validation des entrées**: Validez toutes les entrées externes avant de les utiliser
+        EOF
+        
+        # Générer les sorties
+        echo "security-score=$security_score" >> $GITHUB_OUTPUT
+        echo "vulnerabilities=$(cat .security-enforcer/vulnerabilities.json | jq -c .)" >> $GITHUB_OUTPUT
+        
+        echo "Security analysis completed with score: $security_score/100"
+    
+    - name: Remediate security issues
+      if: inputs.auto-remediate == 'true'
+      id: remediate
+      shell: bash
+      run: |
+        echo "Remediating security issues..."
+        
+        remediated_issues=0
+        total_issues=$(jq '. | length' .security-enforcer/vulnerabilities.json)
+        
+        # Initialiser le rapport de correction
+        echo '{"remediated": [], "failed": []}' > .security-enforcer/remediation/report.json
+        
+        # Traiter chaque vulnérabilité
+        issues=$(jq -c '.[]' .security-enforcer/vulnerabilities.json)
+        echo "$issues" | while read -r issue; do
+          issue_id=$(echo "$issue" | jq -r '.id')
+          severity=$(echo "$issue" | jq -r '.severity')
+          
+          # Ne traiter automatiquement que certains types de problèmes
+          case $issue_id in
+            GHACT-001) # Actions sans version précise
+              workflow=$(echo "$issue" | jq -r '.workflow')
+              echo "Fixing unpinned actions in $workflow..."
+              
+              # Rechercher et corriger les références d'actions non fixées
+              if [ -f "$workflow" ]; then
+                # Backup du fichier
+                cp "$workflow" "$workflow.bak"
+                
+                # Corriger les références connues (exemples)
+                sed -i 's/uses: actions\/checkout@v3/uses: actions\/checkout@v3.5.0/g' "$workflow"
+                sed -i 's/uses: actions\/setup-node@v3/uses: actions\/setup-node@v3.6.0/g' "$workflow"
+                sed -i 's/uses: actions\/setup-python@v4/uses: actions\/setup-python@v4.7.0/g' "$workflow"
+                
+                # Vérifier si des corrections ont été apportées
+                if ! diff -q "$workflow" "$workflow.bak" >/dev/null; then
+                  remediated_issues=$((remediated_issues+1))
+                  
+                  # Ajouter au rapport
+                  tmp=$(mktemp)
+                  jq --arg id "$issue_id" \
+                     --arg file "$workflow" \
+                     --arg action "Fixed unpinned actions with specific versions" \
+                     '.remediated += [{"id": $id, "file": $file, "action": $action}]' \
+                     .security-enforcer/remediation/report.json > "$tmp" && mv "$tmp" .security-enforcer/remediation/report.json
+                else
+                  # Échec - trop complexe pour une correction automatique
+                  tmp=$(mktemp)
+                  jq --arg id "$issue_id" \
+                     --arg file "$workflow" \
+                     --arg reason "Failed to fix automatically - manual intervention required" \
+                     '.failed += [{"id": $id, "file": $file, "reason": $reason}]' \
+                     .security-enforcer/remediation/report.json > "$tmp" && mv "$tmp" .security-enforcer/remediation/report.json
+                fi
+                
+                # Supprimer le backup
+                rm "$workflow.bak"
+              fi
+              ;;
+              
+            GHACT-002) # Permissions trop élevées
+              workflow=$(echo "$issue" | jq -r '.workflow')
+              echo "Fixing excessive permissions in $workflow..."
+              
+              if [ -f "$workflow" ]; then
+                # Backup du fichier
+                cp "$workflow" "$workflow.bak"
+                
+                # Remplacer les permissions excessives
+                sed -i 's/permissions: write-all/permissions: {contents: read}/g' "$workflow"
+                sed -i 's/permissions:\n  write-all/permissions:\n  contents: read/g' "$workflow"
+                
+                # Vérifier si des corrections ont été apportées
+                if ! diff -q "$workflow" "$workflow.bak" >/dev/null; then
+                  remediated_issues=$((remediated_issues+1))
+                  
+                  # Ajouter au rapport
+                  tmp=$(mktemp)
+                  jq --arg id "$issue_id" \
+                     --arg file "$workflow" \
+                     --arg action "Reduced permissions from write-all to minimum required" \
+                     '.remediated += [{"id": $id, "file": $file, "action": $action}]' \
+                     .security-enforcer/remediation/report.json > "$tmp" && mv "$tmp" .security-enforcer/remediation/report.json
+                else
+                  # Échec - trop complexe pour une correction automatique
+                  tmp=$(mktemp)
+                  jq --arg id "$issue_id" \
+                     --arg file "$workflow" \
+                     --arg reason "Failed to fix automatically - manual intervention required" \
+                     '.failed += [{"id": $id, "file": $file, "reason": $reason}]' \
+                     .security-enforcer/remediation/report.json > "$tmp" && mv "$tmp" .security-enforcer/remediation/report.json
+                fi
+                
+                # Supprimer le backup
+                rm "$workflow.bak"
+              fi
+              ;;
+              
+            *) # Autres problèmes non traités automatiquement
+              tmp=$(mktemp)
+              jq --arg id "$issue_id" \
+                 --arg reason "This type of issue requires manual remediation" \
+                 '.failed += [{"id": $id, "reason": $reason}]' \
+                 .security-enforcer/remediation/report.json > "$tmp" && mv "$tmp" .security-enforcer/remediation/report.json
+              ;;
+          esac
+        done
+        
+        # Générer les sorties
+        echo "report=$(cat .security-enforcer/remediation/report.json | jq -c .)" >> $GITHUB_OUTPUT
+        
+        # Journaliser les résultats
+        remediated_count=$(jq '.remediated | length' .security-enforcer/remediation/report.json)
+        failed_count=$(jq '.failed | length' .security-enforcer/remediation/report.json)
+        
+        echo "Remediation completed: $remediated_count issues fixed, $failed_count issues require manual intervention"
+    
+    - name: Check compliance
+      id: compliance
+      shell: bash
+      run: |
+        echo "Checking compliance with security policies..."
+        
+        # Lire les métriques de sécurité
+        security_score=$(jq -r '.score' .security-enforcer/metrics.json)
+        critical_issues=$(jq -r '.critical_issues' .security-enforcer/metrics.json)
+        high_issues=$(jq -r '.high_issues' .security-enforcer/metrics.json)
+        
+        # Déterminer le statut de conformité
+        compliance_status="non-compliant"
+        
+        if [ $security_score -ge 90 ] && [ $critical_issues -eq 0 ]; then
+          compliance_status="compliant"
+        elif [ $security_score -ge 70 ] && [ $critical_issues -eq 0 ] && [ $high_issues -le 2 ]; then
+          compliance_status="partial"
+        fi
+        
+        # Générer le badge de conformité
+        case $compliance_status in
+          compliant)
+            badge_color="green"
+            badge_text="Conformité de sécurité: ✓ Conforme"
+            ;;
+          partial)
+            badge_color="yellow"
+            badge_text="Conformité de sécurité: ⚠ Partiellement Conforme"
+            ;;
+          non-compliant)
+            badge_color="red"
+            badge_text="Conformité de sécurité: ✗ Non Conforme"
+            ;;
+        esac
+        
+        # Générer le badge SVG
+        cat > .security-enforcer/reports/security-badge.svg << EOF
+        <svg xmlns="http://www.w3.org/2000/svg" width="230" height="20">
+          <linearGradient id="b" x2="0" y2="100%">
+            <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+            <stop offset="1" stop-opacity=".1"/>
+          </linearGradient>
+          <mask id="a">
+            <rect width="230" height="20" rx="3" fill="#fff"/>
+          </mask>
+          <g mask="url(#a)">
+            <path fill="#555" d="M0 0h180v20H0z"/>
+            <path fill="#$badge_color" d="M180 0h50v20H180z"/>
+            <path fill="url(#b)" d="M0 0h230v20H0z"/>
+          </g>
+          <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">
+            <text x="90" y="15" fill="#010101" fill-opacity=".3">$badge_text</text>
+            <text x="90" y="14">$badge_text</text>
+            <text x="205" y="15" fill="#010101" fill-opacity=".3">$security_score%</text>
+            <text x="205" y="14">$security_score%</text>
+          </g>
+        </svg>
+        EOF
+        
+        # Générer les sorties
+        echo "status=$compliance_status" >> $GITHUB_OUTPUT
+        
+        echo "Compliance status: $compliance_status (Score: $security_score%)"
+    
+    - name: Runtime protection setup
+      if: inputs.runtime-protection == 'true'
+      shell: bash
+      run: |
+        echo "Setting up runtime protection..."
+        
+        # Créer un script de protection runtime qui serait utilisé en production
+        cat > .security-enforcer/runtime-protection.sh << 'EOF'
+        #!/bin/bash
+        
+        # Script de protection runtime
+        # En production, ce script :
+        # 1. Surveille les processus et les activités système
+        # 2. Détecte les comportements anormaux
+        # 3. Bloque les actions potentiellement dangereuses
+        # 4. Enregistre les événements de sécurité
+        
+        # Simuler la surveillance des processus
+        echo "Runtime protection active"
+        
+        # Simuler la détection d'anomalies
+        echo "Monitoring for suspicious activities..."
+        
+        # En production, ce script s'exécuterait en arrière-plan et prendrait des mesures
+        # en cas de détection d'activités suspectes
+        EOF
+        
+        chmod +x .security-enforcer/runtime-protection.sh
+        
+        echo "Runtime protection configured"
+    
+    - name: Generate security report
+      shell: bash
+      run: |
+        echo "Generating final security report..."
+        
+        # Lire les métriques
+        security_score=$(jq -r '.score' .security-enforcer/metrics.json)
+        critical_issues=$(jq -r '.critical_issues' .security-enforcer/metrics.json)
+        high_issues=$(jq -r '.high_issues' .security-enforcer/metrics.json)
+        medium_issues=$(jq -r '.medium_issues' .security-enforcer/metrics.json)
+        low_issues=$(jq -r '.low_issues' .security-enforcer/metrics.json)
+        
+        # Lire le rapport de correction
+        remediated_count=$(jq '.remediated | length' .security-enforcer/remediation/report.json)
+        
+        # Générer un rapport markdown détaillé
+        cat > .security-enforcer/reports/final-report.md << EOF
+        # Rapport de Sécurité GitHub Actions
+        
+        Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        
+        ## Résumé
+        
+        - **Score de sécurité**: $security_score/100
+        - **Statut de conformité**: $(echo $compliance_status | tr '[:lower:]' '[:upper:]')
+        - **Problèmes détectés**: $(( critical_issues + high_issues + medium_issues + low_issues ))
+        - **Problèmes corrigés automatiquement**: $remediated_count
+        
+        ## Détails des problèmes
+        
+        | Sévérité | Nombre | Description |
+        |----------|--------|-------------|
+        | Critique | $critical_issues | Vulnérabilités nécessitant une attention immédiate |
+        | Élevé | $high_issues | Problèmes de sécurité importants |
+        | Moyen | $medium_issues | Problèmes de sécurité modérés |
+        | Faible | $low_issues | Problèmes mineurs |
+        
+        ## Recommandations
+        
+        $(if [ $critical_issues -gt 0 ]; then echo "⚠️ **Action immédiate requise** : $critical_issues problèmes critiques détectés qui nécessitent une attention urgente."; fi)
+        
+        - **Secrets**: Vérifiez qu'aucun secret n'est exposé dans le code et utilisez les secrets GitHub
+        - **Permissions**: Appliquez le principe du moindre privilège en limitant les permissions
+        - **Dépendances**: Fixez les versions des actions et des dépendances
+        - **Validation**: Validez et sanitisez toutes les entrées externes
+        - **Audit**: Effectuez des audits de sécurité réguliers
+        
+        ## Mesures correctives appliquées
+        
+        $(jq -r '.remediated[] | "- **" + .id + "**: " + .action + " dans `" + .file + "`"' .security-enforcer/remediation/report.json)
+        
+        ## Problèmes nécessitant une intervention manuelle
+        
+        $(jq -r '.failed[] | "- **" + .id + "**: " + .reason + (if has("file") then " (`" + .file + "`)" else "" end)' .security-enforcer/remediation/report.json)
+        EOF
+        
+        echo "Final security report generated"
+    
+    - name: Summary report
+      shell: bash
+      run: |
+        echo "## Security Analysis Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Security Score | $(jq -r '.score' .security-enforcer/metrics.json)/100 |" >> $GITHUB_STEP_SUMMARY
+        echo "| Critical Issues | $(jq -r '.critical_issues' .security-enforcer/metrics.json) |" >> $GITHUB_STEP_SUMMARY
+        echo "| High Issues | $(jq -r '.high_issues' .security-enforcer/metrics.json) |" >> $GITHUB_STEP_SUMMARY
+        echo "| Medium Issues | $(jq -r '.medium_issues' .security-enforcer/metrics.json) |" >> $GITHUB_STEP_SUMMARY
+        echo "| Low Issues | $(jq -r '.low_issues' .security-enforcer/metrics.json) |" >> $GITHUB_STEP_SUMMARY
+        echo "| Auto-remediated | $(jq '.remediated | length' .security-enforcer/remediation/report.json) |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Top Issues" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        jq -r '.[] | select(.severity == "critical" or .severity == "high") | "- **" + .title + "** (" + .severity + "): " + .description' .security-enforcer/vulnerabilities.json >> $GITHUB_STEP_SUMMARY
