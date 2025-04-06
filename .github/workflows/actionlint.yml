@@ -20,26 +20,34 @@ jobs:
   actionlint:
     name: Actionlint
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout du code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
         
       - name: Installation d'Actionlint
         run: |
-          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          echo "${HOME}/bin" >> $GITHUB_PATH
+          # Méthode d'installation plus fiable
+          mkdir -p $HOME/bin
+          curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+          echo "$HOME/bin" >> $GITHUB_PATH
         
       - name: Vérification des workflows avec Actionlint
         id: actionlint
         run: |
           mkdir -p reports
-          actionlint -color -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}%0A```%0A{{$err.Snippet}}%0A```%0A{{end}}' \
-            | tee reports/actionlint-report.txt
+          echo "Exécution d'actionlint sur les workflows..."
           
+          # Exécution d'actionlint avec formatage pour GitHub Actions
+          actionlint -color -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}%0A```%0A{{$err.Snippet}}%0A```%0A{{end}}' > reports/actionlint-report.txt
+          
+          # Vérification du résultat
           if [ -s reports/actionlint-report.txt ]; then
             echo "has_errors=true" >> $GITHUB_OUTPUT
             echo "Des erreurs ont été détectées dans les workflows."
+            cat reports/actionlint-report.txt
           else
             echo "has_errors=false" >> $GITHUB_OUTPUT
             echo "Aucune erreur détectée dans les workflows."
@@ -53,6 +61,10 @@ jobs:
           echo "Des problèmes ont été détectés dans les workflows GitHub Actions. Veuillez corriger les erreurs suivantes:" >> reports/actionlint-summary.md
           echo "" >> reports/actionlint-summary.md
           cat reports/actionlint-report.txt >> reports/actionlint-summary.md
+          
+          # Afficher le rapport dans les logs
+          echo "Rapport détaillé des problèmes:"
+          cat reports/actionlint-summary.md
 
       - name: Création d'une issue pour les erreurs détectées
         if: steps.actionlint.outputs.has_errors == 'true'
