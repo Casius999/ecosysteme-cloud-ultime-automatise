@@ -41,20 +41,25 @@ jobs:
           
       - name: Générer rapport de permissions
         run: |
-          echo "## Rapport de Configuration des Permissions" > permissions_report.md
-          echo "Date: $(date)" >> permissions_report.md
-          echo "Commit: ${{ github.sha }}" >> permissions_report.md
-          echo "" >> permissions_report.md
-          echo "### Permissions Configurées Selon le Principe du Moindre Privilège" >> permissions_report.md
-          echo "- Contents: read" >> permissions_report.md
-          echo "- Actions: read" >> permissions_report.md
-          echo "- Checks: read" >> permissions_report.md
-          echo "- Security Events: read" >> permissions_report.md
-          echo "" >> permissions_report.md
-          echo "### Bénéfices de Sécurité" >> permissions_report.md
-          echo "- Surface d'attaque réduite" >> permissions_report.md
-          echo "- Conformité avec le principe du moindre privilège" >> permissions_report.md
-          echo "- Meilleure isolation des workflows" >> permissions_report.md
+          mkdir -p reports
+          echo "## Rapport de Configuration des Permissions" > reports/permissions_report.md
+          echo "Date: $(date)" >> reports/permissions_report.md
+          echo "Commit: ${{ github.sha }}" >> reports/permissions_report.md
+          echo "" >> reports/permissions_report.md
+          echo "### Permissions Configurées Selon le Principe du Moindre Privilège" >> reports/permissions_report.md
+          echo "- Contents: read" >> reports/permissions_report.md
+          echo "- Actions: read" >> reports/permissions_report.md
+          echo "- Checks: read" >> reports/permissions_report.md
+          echo "- Security Events: read" >> reports/permissions_report.md
+          echo "" >> reports/permissions_report.md
+          echo "### Bénéfices de Sécurité" >> reports/permissions_report.md
+          echo "- Surface d'attaque réduite" >> reports/permissions_report.md
+          echo "- Conformité avec le principe du moindre privilège" >> reports/permissions_report.md
+          echo "- Meilleure isolation des workflows" >> reports/permissions_report.md
           
       - name: Upload du rapport
         uses: actions/upload-artifact@v3
+        with:
+          name: permissions-report
+          path: reports/permissions_report.md
+          retention-days: 30
