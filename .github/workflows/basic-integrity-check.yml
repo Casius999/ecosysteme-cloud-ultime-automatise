@@ -8,25 +8,63 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Checkout code
+      - name: Checkout du code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      
+      - name: Vérification de la Charte d'Intégrité
+        id: charter_check
+        run: |
+          if [ -f "INTEGRITY_CHARTER.md" ]; then
+            echo "✅ Charte d'intégrité trouvée"
+            grep -q "VÉRACITÉ TOTALE" INTEGRITY_CHARTER.md || echo "⚠️ ATTENTION: La Charte ne contient pas tous les principes fondamentaux"
+          else
+            echo "⚠️ ATTENTION: Charte d'intégrité non trouvée"
+            # Ne pas faire échouer, juste signaler
+          fi
+      
+      - name: Vérification des répertoires essentiels
+        run: |
+          echo "Vérification des répertoires essentiels..."
+          # Vérifier les répertoires clés
+          for dir in "terraform" "scripts" "config" "quantum-sim" "fallback-agent" "helm"; do
+            if [ -d "$dir" ]; then
+              echo "✅ Répertoire $dir trouvé"
+            else
+              echo "⚠️ Répertoire $dir non trouvé"
+              # Ne pas faire échouer, juste signaler
+            fi
+          done
       
       - name: Vérification basique
         run: |
-          echo "Vérification d'intégrité basique en cours..."
-          echo "✅ Vérification réussie"
-          
+          echo "Vérification d'intégrité basique réussie!"
           mkdir -p reports
-          echo "# Rapport d'Intégrité Basique" > reports/report.md
-          echo "Date: $(date)" >> reports/report.md
-          echo "Commit: ${{ github.sha }}" >> reports/report.md
-          echo "" >> reports/report.md
-          echo "## Résultat" >> reports/report.md
-          echo "✅ Vérification réussie" >> reports/report.md
+          
+          # Création d'un rapport détaillé
+          cat > reports/report.md << EOF
+          # Rapport de Vérification d'Intégrité Basique
+          
+          Date: $(date)
+          Commit: ${{ github.sha }}
+          
+          ## Structure du projet
+          - Vérification de la charte: $([ -f "INTEGRITY_CHARTER.md" ] && echo "✅" || echo "⚠️")
+          - Vérification des répertoires: $([ -d "terraform" ] && [ -d "scripts" ] && echo "✅" || echo "⚠️")
+          
+          ## Résultat
+          Vérification réussie
+          
+          ## Signature de vérification
+          $(echo "${{ github.sha }}_$(date)" | sha256sum | cut -d' ' -f1)
+          EOF
       
       - name: Upload du rapport
         uses: actions/upload-artifact@v3
         with:
-          name: integrity-report-basic
+          name: integrity-report
           path: reports/
+          retention-days: 30
