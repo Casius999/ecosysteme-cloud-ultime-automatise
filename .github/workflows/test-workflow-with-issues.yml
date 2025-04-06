@@ -1,33 +1,37 @@
-name: "Workflow de Test avec Problèmes à Corriger"
+name: "Workflow de Test avec Problèmes Corrigés"
 
 on:
   # Ce workflow sera exécuté automatiquement
   workflow_dispatch:
-  # Exécution sur un schedule qui ne se déclenchera pas réellement (pour test uniquement)
+  # Exécution sur un schedule valide (premier jour de chaque mois à 5h30)
   schedule:
-    - cron: '30 5 31 2 *'  # 31 février n'existe pas, donc ne se déclenchera jamais
+    - cron: '30 5 1 * *'  # Le 1er de chaque mois à 5h30
 
-# Problème volontaire 1: Pas de section permissions
+# Ajout de permissions minimales selon les principes de moindre privilège
+permissions:
+  contents: read
 
 jobs:
   test_job:
-    runs-on: ubuntu-16.04  # Problème volontaire 2: Version obsolète d'Ubuntu
-    # Problème volontaire 3: Pas de timeout-minutes
+    runs-on: ubuntu-latest  # Version mise à jour d'Ubuntu
+    timeout-minutes: 10  # Ajout d'un timeout pour éviter les exécutions bloquées
     steps:
       - name: Checkout code
-        uses: actions/checkout@v1  # Problème volontaire 4: Version obsolète de checkout
-        # Problème volontaire 5: Pas de fetch-depth
+        uses: actions/checkout@v3  # Version à jour de checkout
+        with:
+          fetch-depth: 0  # Récupération complète de l'historique
       
       - name: Setup Node.js
-        uses: actions/setup-node@v1  # Problème volontaire 6: Version obsolète de setup-node
+        uses: actions/setup-node@v3  # Version à jour de setup-node
         with:
-          node-version: '14.x'
+          node-version: '18.x'  # Version LTS plus récente
       
-      - name: Set output  # Problème volontaire 7: Utilisation de set-output déprécié
+      - name: Set output
+        id: set_var
         run: |
-          echo "::set-output name=test_var::test_value"
+          echo "test_var=test_value" >> $GITHUB_OUTPUT  # Syntaxe moderne pour les outputs
       
       - name: Run tests
         run: |
           echo "Exécution des tests"
-          echo "Ce workflow contient des erreurs que l'agent d'auto-correction devrait détecter"
+          echo "Ce workflow a été corrigé selon les meilleures pratiques"
