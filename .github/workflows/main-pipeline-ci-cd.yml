@@ -1,5 +1,6 @@
 name: Main Pipeline CI/CD
 
+# Définir les déclencheurs du workflow
 on:
   push:
     branches: [ main ]
@@ -17,6 +18,11 @@ on:
           - staging
           - prod
 
+# Définir les permissions globales
+permissions:
+  contents: read
+
+# Définir les jobs du workflow
 jobs:
   # Vérification préalable de l'état de Claude Desktop
   check_claude:
@@ -28,7 +34,6 @@ jobs:
       - name: Vérifier l'état de Claude Desktop
         id: check
         run: |
-          # URL de vérification corrigée (endpoint valide)
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://anthropic.com || echo "DOWN")
           echo "status=$STATUS" >> $GITHUB_OUTPUT
           if [[ "$STATUS" != "200" ]]; then
@@ -130,7 +135,7 @@ jobs:
             npm run test:integration || echo "Des erreurs de test d'intégration ont été détectées"
           else
             mkdir -p test/integration
-            echo "console.log('Test d'intégration simulé');" > test/integration/test.js
+            echo "console.log('Test d\'intégration simulé');" > test/integration/test.js
             node test/integration/test.js
           fi
 
@@ -168,13 +173,6 @@ jobs:
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
-      
-      - name: Login to Docker Hub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME || 'dummy_username' }}
-          password: ${{ secrets.DOCKER_PASSWORD || 'dummy_password' }}
-        if: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
       
       - name: Mock Docker build for app
         run: |
@@ -292,14 +290,10 @@ jobs:
           sed -i 's/app/quantum-optimizer/g' helm/quantum-optimizer/templates/deployment.yaml
       
       - name: Set up kubectl
-        uses: azure/setup-kubectl@v3.0
-        with:
-          version: 'latest'
+        uses: azure/setup-kubectl@v3
       
       - name: Set up Helm
-        uses: azure/setup-helm@v3.5
-        with:
-          version: 'latest'
+        uses: azure/setup-helm@v3
       
       - name: Mock Kubernetes deployment
         run: |
