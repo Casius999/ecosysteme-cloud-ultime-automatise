@@ -1,4 +1,4 @@
-name: Workflow avec Permissions Maximales
+name: Workflow avec Permissions Optimisées
 
 on:
   push:
@@ -17,23 +17,19 @@ on:
           - staging
           - production
 
+# Application du principe du moindre privilège - uniquement les permissions nécessaires
 permissions:
-  actions: write
-  checks: write
-  contents: write
-  deployments: write
-  discussions: write
-  issues: write
-  packages: write
-  pages: write
-  pull-requests: write
-  repository-projects: write
-  security-events: write
-  statuses: write
+  # Permissions lecture seule par défaut
+  contents: read
+  # Permissions spécifiques pour l'upload d'artefacts
+  actions: read
+  checks: read
+  security-events: read
 
 jobs:
   verify_permissions:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout du code
         uses: actions/checkout@v3
@@ -41,7 +37,7 @@ jobs:
       - name: Vérification d'intégrité
         run: |
           echo "Vérification d'intégrité systémique en cours..."
-          echo "✅ Permissions maximales configurées conformément à la Charte d'Intégrité"
+          echo "✅ Permissions optimisées conformément à la Charte d'Intégrité et au principe du moindre privilège"
           
       - name: Générer rapport de permissions
         run: |
@@ -49,22 +45,16 @@ jobs:
           echo "Date: $(date)" >> permissions_report.md
           echo "Commit: ${{ github.sha }}" >> permissions_report.md
           echo "" >> permissions_report.md
-          echo "### Permissions Configurées au Maximum" >> permissions_report.md
-          echo "- Actions: write" >> permissions_report.md
-          echo "- Checks: write" >> permissions_report.md
-          echo "- Contents: write" >> permissions_report.md
-          echo "- Deployments: write" >> permissions_report.md
-          echo "- Discussions: write" >> permissions_report.md
-          echo "- Issues: write" >> permissions_report.md
-          echo "- Packages: write" >> permissions_report.md
-          echo "- Pages: write" >> permissions_report.md
-          echo "- Pull Requests: write" >> permissions_report.md
-          echo "- Repository Projects: write" >> permissions_report.md
-          echo "- Security Events: write" >> permissions_report.md
-          echo "- Statuses: write" >> permissions_report.md
+          echo "### Permissions Configurées Selon le Principe du Moindre Privilège" >> permissions_report.md
+          echo "- Contents: read" >> permissions_report.md
+          echo "- Actions: read" >> permissions_report.md
+          echo "- Checks: read" >> permissions_report.md
+          echo "- Security Events: read" >> permissions_report.md
+          echo "" >> permissions_report.md
+          echo "### Bénéfices de Sécurité" >> permissions_report.md
+          echo "- Surface d'attaque réduite" >> permissions_report.md
+          echo "- Conformité avec le principe du moindre privilège" >> permissions_report.md
+          echo "- Meilleure isolation des workflows" >> permissions_report.md
           
       - name: Upload du rapport
         uses: actions/upload-artifact@v3
-        with:
-          name: permissions-report
-          path: permissions_report.md
