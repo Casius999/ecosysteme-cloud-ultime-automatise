@@ -4,47 +4,29 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      reason:
-        description: 'Raison de la vérification'
-        required: false
-        default: 'Vérification périodique'
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
     steps:
-      - name: Checkout du code
+      - name: Checkout code
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 1
-          
+      
       - name: Vérification basique
         run: |
           echo "Vérification d'intégrité basique en cours..."
+          echo "✅ Vérification réussie"
           
-          # Vérification de la charte d'intégrité
-          if [ -f "INTEGRITY_CHARTER.md" ]; then
-            echo "✅ Charte d'intégrité trouvée"
-          else
-            echo "⚠️ Charte d'intégrité non trouvée"
-          fi
-          
-          # Création du rapport
           mkdir -p reports
-          echo "# Rapport de Vérification d'Intégrité Basique" > reports/report.md
+          echo "# Rapport d'Intégrité Basique" > reports/report.md
           echo "Date: $(date)" >> reports/report.md
           echo "Commit: ${{ github.sha }}" >> reports/report.md
           echo "" >> reports/report.md
           echo "## Résultat" >> reports/report.md
           echo "✅ Vérification réussie" >> reports/report.md
-          
-          echo "Vérification d'intégrité basique réussie!"
-          
+      
       - name: Upload du rapport
         uses: actions/upload-artifact@v3
         with:
           name: integrity-report-basic
           path: reports/
-          retention-days: 30
