@@ -20,14 +20,15 @@ jobs:
   actionlint:
     name: Actionlint
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout du code
         uses: actions/checkout@v3
         
       - name: Installation d'Actionlint
         run: |
-          bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          echo "::add-path::${HOME}/bin"
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          echo "${HOME}/bin" >> $GITHUB_PATH
         
       - name: Vérification des workflows avec Actionlint
         id: actionlint
@@ -37,10 +38,10 @@ jobs:
             | tee reports/actionlint-report.txt
           
           if [ -s reports/actionlint-report.txt ]; then
-            echo "::set-output name=has_errors::true"
+            echo "has_errors=true" >> $GITHUB_OUTPUT
             echo "Des erreurs ont été détectées dans les workflows."
           else
-            echo "::set-output name=has_errors::false"
+            echo "has_errors=false" >> $GITHUB_OUTPUT
             echo "Aucune erreur détectée dans les workflows."
           fi
 
