@@ -17,20 +17,32 @@ on:
           - staging
           - prod
 
+# Définition de la concurrence pour éviter les exécutions parallèles inutiles
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Définition des permissions minimales requises
+permissions:
+  contents: read
+  id-token: write # Nécessaire pour l'authentification OIDC
+
 jobs:
   # Vérification d'intégrité initiale
   integrity_check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # Ajout d'un timeout pour éviter les jobs bloqués
     steps:
       - name: Checkout du code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # Mise à jour vers la dernière version
         with:
-          fetch-depth: 0
+          fetch-depth: 1 # Optimisation pour ne récupérer que le dernier commit
       
       - name: Installation des dépendances Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # Mise à jour vers la dernière version
         with:
-          python-version: '3.9'
+          python-version: '3.11' # Mise à jour vers une version Python plus récente
+          cache: 'pip' # Activation du cache pour pip
       
       - name: Installation des packages Python
         run: |
@@ -78,6 +90,7 @@ EOF
           fi
       
       - name: Génération du rapport d'intégrité
+        id: integrity_report
         run: |
           mkdir -p reports
           cat > reports/integrity_report.md << EOF
@@ -89,16 +102,19 @@ Commit: ${{ github.sha }}
 - Structure vérifiée
 - Intégrité validée
 EOF
+          echo "report_created=true" >> $GITHUB_OUTPUT
       
       - name: Upload du rapport d'intégrité
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4 # Mise à jour vers la dernière version
         with:
           name: integrity-report
           path: reports/
+          retention-days: 90 # Spécification de la période de rétention
 
   # Vérification de l'état de Claude Desktop
   check_claude:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: integrity_check
     outputs:
       claude_status: ${{ steps.check.outputs.status }}
@@ -117,10 +133,13 @@ EOF
   # Préparation de l'environnement et tests statiques
   prepare_and_test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: check_claude
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       
       - name: Préparation des répertoires
         run: |
@@ -128,9 +147,10 @@ EOF
           mkdir -p app terraform/scripts fallback-agent quantum-sim helm/{app,fallback-agent,quantum-optimizer}/templates config scripts chaos
       
       - name: Installation et configuration de Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4 # Mise à jour vers la dernière version
         with:
-          node-version: '18'
+          node-version: '20' # Mise à jour vers une version Node.js LTS plus récente
+          cache: 'npm' # Activation du cache pour npm
       
       - name: Création de package.json si manquant
         run: |
@@ -149,7 +169,7 @@ EOF
           fi
       
       - name: Installation des dépendances
-        run: npm install
+        run: npm ci # Utilisation de 'npm ci' au lieu de 'npm install' pour des installations plus fiables
       
       - name: Lint et tests
         run: |
@@ -162,7 +182,7 @@ EOF
           # Création des fichiers Terraform minimaux si nécessaire
           if [ ! -f "terraform/main.tf" ]; then
             echo 'terraform {
-              required_version = ">= 1.0.0"
+              required_version = ">= 1.5.0"
               backend "local" {}
             }
             
@@ -199,65 +219,126 @@ EOF
   # Construction des conteneurs Docker
   build_containers:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: prepare_and_test
+    permissions:
+      contents: read
+      packages: write # Permission pour pousser les images vers GHCR
+    outputs:
+      app_image: ${{ steps.image_info.outputs.app_image }}
+      fallback_image: ${{ steps.image_info.outputs.fallback_image }}
+      quantum_image: ${{ steps.image_info.outputs.quantum_image }}
+    strategy:
+      matrix:
+        component: [app, fallback-agent, quantum-sim]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       
-      - name: Préparation des Dockerfiles
-        run: |
-          # Création des Dockerfiles minimaux
-          mkdir -p app fallback-agent quantum-sim
-          
-          # App Dockerfile
-          echo 'FROM node:18-alpine
-          WORKDIR /app
-          COPY . .
-          CMD ["echo", "Application running"]' > app/Dockerfile
-          
-          # Fallback Agent Dockerfile
-          echo 'FROM python:3.9-slim
-          WORKDIR /app
-          COPY . .
-          CMD ["echo", "Fallback agent running"]' > fallback-agent/Dockerfile
-          
-          # Quantum Sim Dockerfile
-          echo 'FROM python:3.9-slim
-          WORKDIR /app
-          COPY . .
-          CMD ["echo", "Quantum simulation running"]' > quantum-sim/Dockerfile
+      - name: Configuration de QEMU
+        uses: docker/setup-qemu-action@v3
       
-      - name: Configuration de Docker
+      - name: Configuration de Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login à GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Préparation du Dockerfile pour ${{ matrix.component }}
         run: |
-          # Simulation de build des images sans push réel
-          echo "Building app image..."
-          docker build -t cloud-app:latest app/
+          mkdir -p ${{ matrix.component }}
           
-          echo "Building fallback agent image..."
-          docker build -t fallback-agent:latest fallback-agent/
-          
-          echo "Building quantum simulation image..."
-          docker build -t quantum-sim:latest quantum-sim/
+          # Création des Dockerfiles spécifiques à chaque composant
+          if [ "${{ matrix.component }}" = "app" ]; then
+            echo 'FROM node:20-alpine
+          WORKDIR /app
+          COPY . .
+          RUN apk add --no-cache dumb-init
+          USER node
+          ENTRYPOINT ["dumb-init", "--"]
+          CMD ["echo", "Application running"]' > ${{ matrix.component }}/Dockerfile
+          elif [ "${{ matrix.component }}" = "fallback-agent" ]; then
+            echo 'FROM python:3.11-slim
+          WORKDIR /app
+          COPY . .
+          RUN pip install --no-cache-dir -U pip && \
+              useradd -m appuser
+          USER appuser
+          CMD ["echo", "Fallback agent running"]' > ${{ matrix.component }}/Dockerfile
+          elif [ "${{ matrix.component }}" = "quantum-sim" ]; then
+            echo 'FROM python:3.11-slim
+          WORKDIR /app
+          COPY . .
+          RUN pip install --no-cache-dir -U pip && \
+              useradd -m appuser
+          USER appuser
+          CMD ["echo", "Quantum simulation running"]' > ${{ matrix.component }}/Dockerfile
+          fi
+      
+      - name: Construction et push de l'image ${{ matrix.component }}
+        id: docker_build
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.component }}
+          push: false # Ne pas push pour l'instant, juste construire
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cloud-ecosystem-${{ matrix.component }}:latest
+            ghcr.io/${{ github.repository_owner }}/cloud-ecosystem-${{ matrix.component }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Analyse de sécurité de l'image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/cloud-ecosystem-${{ matrix.component }}:${{ github.sha }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Push de l'image
+        if: success()
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.component }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cloud-ecosystem-${{ matrix.component }}:latest
+            ghcr.io/${{ github.repository_owner }}/cloud-ecosystem-${{ matrix.component }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Information sur l'image
+        id: image_info
+        run: |
+          echo "${{ matrix.component }}_image=ghcr.io/${{ github.repository_owner }}/cloud-ecosystem-${{ matrix.component }}:${{ github.sha }}" >> $GITHUB_OUTPUT
       
       - name: Archive des Dockerfiles
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: dockerfiles
-          path: |
-            app/Dockerfile
-            fallback-agent/Dockerfile
-            quantum-sim/Dockerfile
+          name: dockerfiles-${{ matrix.component }}
+          path: ${{ matrix.component }}/Dockerfile
 
   # Préparation pour le déploiement
   prepare_deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [build_containers, check_claude]
     if: success() && (github.event_name == 'push' || github.event.inputs.environment != '')
     outputs:
       environment: ${{ steps.set-env.outputs.environment }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       
       - name: Déterminer l'environnement
         id: set-env
@@ -284,11 +365,13 @@ EOF
           version: 0.1.0
           appVersion: 1.0.0" > helm/$chart/Chart.yaml
             
-            # values.yaml
+            # values.yaml avec plus de paramètres de configuration
             echo "image:
-          repository: cloud-ecosystem/$chart
-          tag: latest
+          repository: ghcr.io/${{ github.repository_owner }}/cloud-ecosystem-$chart
+          tag: ${{ github.sha }}
           pullPolicy: Always
+          
+          replicaCount: 1
           
           resources:
             limits:
@@ -296,17 +379,29 @@ EOF
               memory: 512Mi
             requests:
               cpu: 100m
-              memory: 128Mi" > helm/$chart/values.yaml
+              memory: 128Mi
+              
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            readOnlyRootFilesystem: true
             
-            # deployment.yaml
+          nodeSelector: {}
+          tolerations: []
+          affinity: {}" > helm/$chart/values.yaml
+            
+            # deployment.yaml avec meilleures pratiques de sécurité
             echo "apiVersion: apps/v1
           kind: Deployment
           metadata:
             name: {{ .Release.Name }}
             labels:
               app: {{ .Release.Name }}
+              helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+              app.kubernetes.io/managed-by: {{ .Release.Service }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
           spec:
-            replicas: 1
+            replicas: {{ .Values.replicaCount }}
             selector:
               matchLabels:
                 app: {{ .Release.Name }}
@@ -317,14 +412,40 @@ EOF
               spec:
                 containers:
                 - name: {{ .Chart.Name }}
-                  image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+                  image: {{ .Values.image.repository }}:{{ .Values.image.tag | default \"latest\" }}
                   imagePullPolicy: {{ .Values.image.pullPolicy }}
+                  securityContext:
+                    {{- toYaml .Values.securityContext | nindent 12 }}
                   resources:
-                    {{- toYaml .Values.resources | nindent 12 }}" > helm/$chart/templates/deployment.yaml
+                    {{- toYaml .Values.resources | nindent 12 }}
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: http
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                  readinessProbe:
+                    httpGet:
+                      path: /ready
+                      port: http
+                    initialDelaySeconds: 5
+                    periodSeconds: 10
+                {{- with .Values.nodeSelector }}
+                nodeSelector:
+                  {{- toYaml . | nindent 8 }}
+                {{- end }}
+                {{- with .Values.affinity }}
+                affinity:
+                  {{- toYaml . | nindent 8 }}
+                {{- end }}
+                {{- with .Values.tolerations }}
+                tolerations:
+                  {{- toYaml . | nindent 8 }}
+                {{- end }}" > helm/$chart/templates/deployment.yaml
           done
       
       - name: Archive des fichiers Helm
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: helm-charts
           path: helm/
@@ -332,13 +453,16 @@ EOF
   # Génération du rapport de déploiement
   generate_deploy_report:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: prepare_deploy
     environment:
       name: ${{ needs.prepare_deploy.outputs.environment }}
       url: https://cloud-app.${{ needs.prepare_deploy.outputs.environment }}.example.com
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       
       - name: Création du rapport de déploiement
         run: |
@@ -371,7 +495,7 @@ URL: https://cloud-app.${ENV}.example.com
 EOF
       
       - name: Upload du rapport de déploiement
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: deployment-report
           path: reports/deployment_report.md

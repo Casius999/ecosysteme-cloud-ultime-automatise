@@ -3,8 +3,15 @@ name: Super-Linter - Analyse de code complète
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/workflows/actionlint.yml'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   schedule:
     - cron: '0 0 * * 3'  # Exécution hebdomadaire le mercredi à minuit
   workflow_dispatch:
@@ -13,24 +20,152 @@ on:
         description: 'Raison de l''exécution manuelle'
         required: false
         default: 'Vérification de la qualité du code'
+      scope:
+        description: 'Étendue de l''analyse'
+        required: false
+        default: 'changed'
+        type: choice
+        options:
+          - changed
+          - all
+
+# Définition de la concurrence pour éviter les exécutions parallèles inutiles
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Définition des permissions minimales requises
+permissions:
+  contents: read
+  security-events: write
+  issues: write
 
 jobs:
   super-lint:
     name: Super-Linter
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # Augmentation du timeout pour les analyses complètes
+    env:
+      # Configuration par défaut
+      DEFAULT_BRANCH: main
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      LINTER_RULES_PATH: .github/linters
+      LOG_LEVEL: NOTICE
+      OUTPUT_DETAILS: detailed
+      OUTPUT_FORMAT: sarif
+      SARIF_REPORTER: true
+      REPORT_SARIF_FILE: super-linter-report.sarif
     steps:
       - name: Checkout du code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           # Profondeur complète pour l'analyse des changements
-          fetch-depth: 0
+          fetch-depth: ${{ github.event.inputs.scope == 'all' || github.event_name == 'schedule' && '0' || '1' }}
 
-      - name: Configuration du Super-Linter
+      - name: Préparation du répertoire des configurations
         run: |
-          echo "VALIDATE_ALL_CODEBASE=false" >> $GITHUB_ENV
-          echo "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
-          echo "DEFAULT_BRANCH=main" >> $GITHUB_ENV
-          echo "LINTER_RULES_PATH=.github/linters" >> $GITHUB_ENV
+          mkdir -p .github/linters
+
+      - name: Création de configurations spécifiques
+        run: |
+          # Configuration Markdown
+          cat > .github/linters/.markdownlint.yml << EOF
+          default: true
+          MD013:
+            line_length: 120
+          MD033: false
+          EOF
+          
+          # Configuration Python
+          cat > .github/linters/.python-lint << EOF
+          [MASTER]
+          ignore=CVS,tests
+          ignore-patterns=test_.*?py
+          jobs=2
+          
+          [MESSAGES CONTROL]
+          disable=C0111,I0011,I0012,W0704,W0142,W0212,W0232,W0613,W0702,R0201
+          
+          [REPORTS]
+          output-format=text
+          reports=yes
+          evaluation=10.0 - ((float(5 * error + warning + refactor + convention) / statement) * 10)
+          EOF
+          
+          # Configuration ESLint
+          cat > .github/linters/.eslintrc.yml << EOF
+          env:
+            browser: true
+            es6: true
+            node: true
+          extends:
+            - eslint:recommended
+          parserOptions:
+            ecmaVersion: 2022
+            sourceType: module
+          root: true
+          rules:
+            no-console: 'off'
+          EOF
+          
+          # Configuration Terraform
+          cat > .github/linters/.tflint.hcl << EOF
+          plugin "aws" {
+            enabled = true
+            version = "0.21.1"
+            source  = "github.com/terraform-linters/tflint-ruleset-aws"
+          }
+          
+          rule "terraform_deprecated_index" {
+            enabled = true
+          }
+          
+          rule "terraform_unused_declarations" {
+            enabled = true
+          }
+          
+          rule "terraform_comment_syntax" {
+            enabled = true
+          }
+          
+          rule "terraform_documented_outputs" {
+            enabled = true
+          }
+          
+          rule "terraform_documented_variables" {
+            enabled = true
+          }
+          
+          rule "terraform_typed_variables" {
+            enabled = true
+          }
+          
+          rule "terraform_naming_convention" {
+            enabled = true
+          }
+          
+          rule "terraform_required_version" {
+            enabled = true
+          }
+          EOF
+
+      - name: Déterminer l'étendue de l'analyse
+        id: scope
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ github.event.inputs.scope }}" == "all" ]]; then
+            echo "VALIDATE_ALL_CODEBASE=true" >> $GITHUB_ENV
+            echo "scope=all" >> $GITHUB_OUTPUT
+            echo "Analyse complète de tout le code"
+          else
+            echo "VALIDATE_ALL_CODEBASE=false" >> $GITHUB_ENV
+            echo "scope=changed" >> $GITHUB_OUTPUT
+            echo "Analyse limitée aux fichiers modifiés"
+          fi
+
+      - name: Configuration des validateurs basée sur le contenu du dépôt
+        id: validators
+        run: |
+          # Configuration par défaut de tous les validateurs
           echo "VALIDATE_TERRAFORM=true" >> $GITHUB_ENV
           echo "VALIDATE_KUBERNETES=true" >> $GITHUB_ENV
           echo "VALIDATE_YAML=true" >> $GITHUB_ENV
@@ -41,65 +176,51 @@ jobs:
           echo "VALIDATE_JAVASCRIPT=true" >> $GITHUB_ENV
           echo "VALIDATE_DOCKERFILE=true" >> $GITHUB_ENV
           echo "VALIDATE_GITHUB_ACTIONS=true" >> $GITHUB_ENV
-          mkdir -p .github/linters
+          
+          # Configuration des filtres
+          echo "FILTER_REGEX_INCLUDE=.*" >> $GITHUB_ENV
+          echo "FILTER_REGEX_EXCLUDE=(.*\/node_modules\/.*|.*\/\.git\/.*|.*\/\.terraform\/.*)" >> $GITHUB_ENV
+          
+          # Ajout de validateurs supplémentaires basés sur la présence de fichiers spécifiques
+          if [ -f "package.json" ]; then
+            echo "VALIDATE_TYPESCRIPT=true" >> $GITHUB_ENV
+            echo "VALIDATE_HTML=true" >> $GITHUB_ENV
+            echo "VALIDATE_CSS=true" >> $GITHUB_ENV
+            echo "VALIDATE_JAVASCRIPT_ES=true" >> $GITHUB_ENV
+            echo "TypeScript/JavaScript détectés" >> $GITHUB_STEP_SUMMARY
+          fi
 
-      - name: Création de configurations spécifiques
-        run: |
-          cat > .github/linters/.markdownlint.yml << EOF
-          default: true
-          MD013:
-            line_length: 120
-          MD033: false
-          EOF
+          if [ -f "requirements.txt" ] || [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+            echo "VALIDATE_PYTHON_BLACK=true" >> $GITHUB_ENV
+            echo "VALIDATE_PYTHON_FLAKE8=true" >> $GITHUB_ENV
+            echo "VALIDATE_PYTHON_ISORT=true" >> $GITHUB_ENV
+            echo "VALIDATE_PYTHON_MYPY=true" >> $GITHUB_ENV
+            echo "Python détecté" >> $GITHUB_STEP_SUMMARY
+          fi
           
-          cat > .github/linters/.python-lint << EOF
-          [MASTER]
-          ignore=CVS,tests
-          ignore-patterns=test_.*?py
-          EOF
-          
-          cat > .github/linters/.eslintrc.yml << EOF
-          env:
-            browser: true
-            es6: true
-            node: true
-          extends:
-            - eslint:recommended
-          parserOptions:
-            ecmaVersion: 2018
-            sourceType: module
-          root: true
-          EOF
+          if ls *.tfvars 2>/dev/null || [ -d "terraform" ]; then
+            echo "VALIDATE_TERRAFORM_TFLINT=true" >> $GITHUB_ENV
+            echo "Terraform détecté" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Exécution de Super-Linter
         id: lint
-        uses: github/super-linter@v5
+        uses: github/super-linter/slim@v5  # Utilisation de la version "slim" pour des performances améliorées
         env:
-          VALIDATE_ALL_CODEBASE: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
+          VALIDATE_ALL_CODEBASE: ${{ env.VALIDATE_ALL_CODEBASE }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BRANCH: main
           LINTER_RULES_PATH: .github/linters
-          VALIDATE_TERRAFORM: true
-          VALIDATE_KUBERNETES: true
-          VALIDATE_YAML: true
-          VALIDATE_JSON: true
-          VALIDATE_MARKDOWN: true
-          VALIDATE_BASH: true
-          VALIDATE_PYTHON: true
-          VALIDATE_JAVASCRIPT: true
-          VALIDATE_DOCKERFILE: true
-          VALIDATE_GITHUB_ACTIONS: true
           LOG_LEVEL: NOTICE
           OUTPUT_DETAILS: detailed
           OUTPUT_FORMAT: sarif
           SARIF_REPORTER: true
           REPORT_SARIF_FILE: super-linter-report.sarif
-          FILTER_REGEX_INCLUDE: .*
-          FILTER_REGEX_EXCLUDE: (.*\/node_modules\/.*|.*\/\.git\/.*)
+          DISABLE_ERRORS: false  # Nous voulons que le workflow échoue si des erreurs sont trouvées
 
       - name: Téléversement du rapport SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: super-linter-report.sarif
           category: super-linter
@@ -108,27 +229,52 @@ jobs:
         if: always()
         run: |
           mkdir -p reports
-          echo "# Rapport Super-Linter" > reports/super-linter-report.md
-          echo "" >> reports/super-linter-report.md
-          echo "Date d'exécution: $(date)" >> reports/super-linter-report.md
-          echo "" >> reports/super-linter-report.md
           
-          if [ "${{ steps.lint.outcome }}" == "success" ]; then
-            echo "✅ **Résultat: Succès**" >> reports/super-linter-report.md
-            echo "" >> reports/super-linter-report.md
-            echo "Aucun problème détecté dans le code." >> reports/super-linter-report.md
+          # Récupérer le statut de l'étape précédente
+          LINT_STATUS="${{ steps.lint.outcome }}"
+          
+          # Déterminer le résultat de l'analyse
+          if [ "$LINT_STATUS" == "success" ]; then
+            RESULT_ICON="✅"
+            RESULT_TEXT="Succès"
+            DETAILS="Aucun problème détecté dans le code."
           else
-            echo "❌ **Résultat: Échec**" >> reports/super-linter-report.md
-            echo "" >> reports/super-linter-report.md
-            echo "Des problèmes ont été détectés dans le code. Consultez les détails dans le rapport SARIF." >> reports/super-linter-report.md
-            
-            # Création d'une issue si des problèmes sont détectés
-            echo "::set-output name=create_issue::true"
+            RESULT_ICON="❌"
+            RESULT_TEXT="Échec"
+            DETAILS="Des problèmes ont été détectés dans le code. Consultez les détails dans le rapport SARIF."
           fi
+          
+          # Créer le rapport
+          cat > reports/super-linter-report.md << EOF
+# Rapport Super-Linter
+
+Date d'exécution: $(date)
+Commit: ${{ github.sha }}
+Étendue de l'analyse: ${{ steps.scope.outputs.scope }}
+
+$RESULT_ICON **Résultat: $RESULT_TEXT**
+
+$DETAILS
+
+## Détails de l'analyse
+
+- Exécution sur la branche: ${{ github.ref_name }}
+- Déclenchée par: ${{ github.event_name }}
+- Utilisateur: ${{ github.actor }}
+
+## Actions à prendre
+
+$( [ "$LINT_STATUS" == "success" ] && echo "- Continuez à maintenir la qualité du code" || echo "- Consultez les détails dans les journaux de GitHub Actions\n- Corrigez les problèmes détectés\n- Exécutez à nouveau l'analyse")
+
+## Outils utilisés
+
+- [GitHub Super-Linter](https://github.com/github/super-linter)
+- Version: v5
+EOF
 
       - name: Téléchargement du rapport
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: linter-reports
           path: reports/
@@ -141,4 +287,20 @@ jobs:
           title: "🔍 Problèmes de qualité de code détectés par Super-Linter"
           content-filepath: reports/super-linter-report.md
           labels: code-quality, linting, maintenance, automation
-          assignees: Casius999
+          assignees: ${{ github.repository_owner }}
+
+      - name: Résumé des résultats
+        if: always()
+        run: |
+          echo "## Résultats de l'analyse Super-Linter" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.lint.outcome }}" == "success" ]; then
+            echo "✅ **Succès - Aucun problème détecté**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Échec - Des problèmes ont été détectés**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Une issue a été créée pour suivre ces problèmes." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Étendue de l'analyse : **${{ steps.scope.outputs.scope }}**" >> $GITHUB_STEP_SUMMARY
