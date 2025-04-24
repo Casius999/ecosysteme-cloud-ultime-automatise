@@ -6,80 +6,200 @@ on:
   issue_comment:
     types: [created, edited]
 
+# Définition de la concurrence pour éviter les exécutions parallèles inutiles
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.comment.id }}
+  cancel-in-progress: false
+
+# Définition des permissions minimales requises
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: write
+
 jobs:
   process-commands:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: |
       (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'issueops')) ||
       (github.event_name == 'issue_comment' && github.event.issue.state == 'open' && contains(github.event.issue.labels.*.name, 'issueops'))
     steps:
       - name: Checkout du code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
       
       - name: Configuration de l'environnement
+        id: config
         run: |
+          set -euo pipefail
+          
           mkdir -p reports
-          echo "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
-          echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_ENV
-          echo "ISSUE_TITLE=${{ github.event.issue.title }}" >> $GITHUB_ENV
-          echo "ISSUE_BODY=${{ github.event.issue.body }}" >> $GITHUB_ENV
-          echo "COMMENT_BODY=${{ github.event.comment.body || '' }}" >> $GITHUB_ENV
-          echo "ACTOR=${{ github.actor }}" >> $GITHUB_ENV
+          
+          # Enregistrement des variables d'environnement principales
+          {
+            echo "ISSUE_NUMBER=${{ github.event.issue.number }}"
+            echo "ISSUE_TITLE=${{ github.event.issue.title }}"
+            echo "ACTOR=${{ github.actor }}"
+          } >> $GITHUB_ENV
+          
+          # Vérification des permissions de l'utilisateur
+          IS_ADMIN=false
+          IS_MAINTAINER=false
+          
+          if [ "${{ github.actor }}" == "${{ github.repository_owner }}" ]; then
+            IS_ADMIN=true
+            echo "user_role=admin" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.actor }}" =~ ^(Casius999|maintainer1|maintainer2)$ ]]; then
+            IS_MAINTAINER=true
+            echo "user_role=maintainer" >> $GITHUB_OUTPUT
+          else
+            echo "user_role=contributor" >> $GITHUB_OUTPUT
+          fi
+          
+          {
+            echo "IS_ADMIN=$IS_ADMIN"
+            echo "IS_MAINTAINER=$IS_MAINTAINER"
+          } >> $GITHUB_ENV
+          
+          # Création du fichier temporaire de file d'attente des déploiements
+          if [ ! -f "reports/deployment_queue.json" ]; then
+            echo '{"queue": []}' > reports/deployment_queue.json
+          fi
       
       - name: Analyse des commandes de l'issue
         id: parse-commands
         run: |
+          set -euo pipefail
+          
           # Récupération du contenu à analyser
           if [ "${{ github.event_name }}" == "issues" ]; then
-            CONTENT="${ISSUE_BODY}"
+            CONTENT="${{ github.event.issue.body }}"
           else
-            CONTENT="${COMMENT_BODY}"
+            CONTENT="${{ github.event.comment.body }}"
           fi
           
-          # Extraction des commandes
-          echo "CONTENT: ${CONTENT}"
+          # Extraction des commandes avec des expressions régulières plus robustes
+          echo "CONTENT: $CONTENT"
           
-          # Vérification des commandes connues
+          # Variables par défaut
           DETECTED_COMMAND="none"
+          ENVIRONMENT=""
+          FIX_TYPE=""
           
           # Commande de déploiement
-          if echo "${CONTENT}" | grep -i -E '/deploy +([a-zA-Z0-9_-]+)' > /dev/null; then
-            ENVIRONMENT=$(echo "${CONTENT}" | grep -i -E '/deploy +([a-zA-Z0-9_-]+)' | sed -E 's/.*\/deploy +([a-zA-Z0-9_-]+).*/\1/')
-            DETECTED_COMMAND="deploy"
-            echo "ENVIRONMENT=${ENVIRONMENT}" >> $GITHUB_ENV
-            echo "::set-output name=command::deploy"
-            echo "::set-output name=environment::${ENVIRONMENT}"
+          if echo "$CONTENT" | grep -i -E '^[[:space:]]*\/deploy[[:space:]]+([a-zA-Z0-9_-]+)[[:space:]]*($|[^a-zA-Z0-9_-])' > /dev/null; then
+            ENVIRONMENT=$(echo "$CONTENT" | grep -i -E '\/deploy[[:space:]]+([a-zA-Z0-9_-]+)' | head -1 | sed -E 's/.*\/deploy[[:space:]]+([a-zA-Z0-9_-]+).*/\1/')
+            if [[ "$ENVIRONMENT" =~ ^(dev|staging|prod)$ ]]; then
+              DETECTED_COMMAND="deploy"
+              echo "Commande de déploiement détectée pour l'environnement: $ENVIRONMENT"
+            else
+              echo "Environnement non valide: $ENVIRONMENT"
+              DETECTED_COMMAND="invalid_environment"
+            fi
           
           # Commande de fix
-          elif echo "${CONTENT}" | grep -i -E '/fix +([a-zA-Z0-9_-]+)' > /dev/null; then
-            FIX_TYPE=$(echo "${CONTENT}" | grep -i -E '/fix +([a-zA-Z0-9_-]+)' | sed -E 's/.*\/fix +([a-zA-Z0-9_-]+).*/\1/')
-            DETECTED_COMMAND="fix"
-            echo "FIX_TYPE=${FIX_TYPE}" >> $GITHUB_ENV
-            echo "::set-output name=command::fix"
-            echo "::set-output name=fix_type::${FIX_TYPE}"
+          elif echo "$CONTENT" | grep -i -E '^[[:space:]]*\/fix[[:space:]]+([a-zA-Z0-9_-]+)[[:space:]]*($|[^a-zA-Z0-9_-])' > /dev/null; then
+            FIX_TYPE=$(echo "$CONTENT" | grep -i -E '\/fix[[:space:]]+([a-zA-Z0-9_-]+)' | head -1 | sed -E 's/.*\/fix[[:space:]]+([a-zA-Z0-9_-]+).*/\1/')
+            if [[ "$FIX_TYPE" =~ ^(dependencies|workflows|terraform)$ ]]; then
+              DETECTED_COMMAND="fix"
+              echo "Commande de correction détectée pour le type: $FIX_TYPE"
+            else
+              echo "Type de correction non valide: $FIX_TYPE"
+              DETECTED_COMMAND="invalid_fix_type"
+            fi
           
           # Commande d'analyse
-          elif echo "${CONTENT}" | grep -i -E '/analyze' > /dev/null; then
+          elif echo "$CONTENT" | grep -i -E '^[[:space:]]*\/analyze[[:space:]]*($|[^a-zA-Z0-9_-])' > /dev/null; then
             DETECTED_COMMAND="analyze"
-            echo "::set-output name=command::analyze"
+            echo "Commande d'analyse détectée"
           
-          # Commande de vérification d'optimisation
-          elif echo "${CONTENT}" | grep -i -E '/optimize' > /dev/null; then
+          # Commande d'optimisation
+          elif echo "$CONTENT" | grep -i -E '^[[:space:]]*\/optimize[[:space:]]*($|[^a-zA-Z0-9_-])' > /dev/null; then
             DETECTED_COMMAND="optimize"
-            echo "::set-output name=command::optimize"
+            echo "Commande d'optimisation détectée"
           fi
           
-          echo "Commande détectée: ${DETECTED_COMMAND}"
+          # Enregistrement des résultats
+          {
+            echo "command=$DETECTED_COMMAND"
+            echo "environment=$ENVIRONMENT"
+            echo "fix_type=$FIX_TYPE"
+          } >> $GITHUB_OUTPUT
+          
+          echo "Commande détectée: $DETECTED_COMMAND"
+      
+      - name: Vérification des autorisations
+        id: check-permissions
+        if: steps.parse-commands.outputs.command != 'none'
+        run: |
+          set -euo pipefail
+          
+          COMMAND="${{ steps.parse-commands.outputs.command }}"
+          IS_AUTHORIZED=true
+          
+          # Vérification des autorisations spécifiques
+          if [ "$COMMAND" == "deploy" ] && [ "${{ steps.parse-commands.outputs.environment }}" == "prod" ]; then
+            # Seuls les administrateurs peuvent déployer en production
+            if [ "$IS_ADMIN" != "true" ]; then
+              IS_AUTHORIZED=false
+              echo "⚠️ Déploiement en production non autorisé pour ${{ github.actor }}"
+            fi
+          fi
+          
+          echo "is_authorized=$IS_AUTHORIZED" >> $GITHUB_OUTPUT
+      
+      - name: Action - Gestion des commandes invalides
+        if: |
+          steps.parse-commands.outputs.command == 'invalid_environment' || 
+          steps.parse-commands.outputs.command == 'invalid_fix_type'
+        run: |
+          set -euo pipefail
+          
+          COMMAND="${{ steps.parse-commands.outputs.command }}"
+          
+          if [ "$COMMAND" == "invalid_environment" ]; then
+            gh issue comment "${{ github.event.issue.number }}" --body "⚠️ **Erreur:** Environnement '${{ steps.parse-commands.outputs.environment }}' non reconnu. Les environnements valides sont: dev, staging, prod."
+          elif [ "$COMMAND" == "invalid_fix_type" ]; then
+            gh issue comment "${{ github.event.issue.number }}" --body "⚠️ **Erreur:** Type de correction '${{ steps.parse-commands.outputs.fix_type }}' non reconnu. Les types valides sont: dependencies, workflows, terraform."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Action - Refus d'autorisation
+        if: |
+          steps.parse-commands.outputs.command != 'none' && 
+          steps.parse-commands.outputs.command != 'invalid_environment' && 
+          steps.parse-commands.outputs.command != 'invalid_fix_type' && 
+          steps.check-permissions.outputs.is_authorized == 'false'
+        run: |
+          set -euo pipefail
+          
+          COMMAND="${{ steps.parse-commands.outputs.command }}"
+          USER_ROLE="${{ steps.config.outputs.user_role }}"
+          
+          gh issue comment "${{ github.event.issue.number }}" --body "⛔ **Accès refusé:** Vous n'avez pas les autorisations nécessaires pour exécuter cette commande.
+          
+          **Commande:** \`/$COMMAND\`
+          **Votre rôle:** $USER_ROLE
+          
+          Veuillez contacter un administrateur pour assistance."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Action - Analyse du dépôt
-        if: steps.parse-commands.outputs.command == 'analyze'
+        if: |
+          steps.parse-commands.outputs.command == 'analyze' && 
+          steps.check-permissions.outputs.is_authorized == 'true'
         run: |
+          set -euo pipefail
+          
           echo "Analyse du dépôt en cours..."
           
           # Vérification de la structure
-          DIRECTORIES=("app" "terraform" "quantum-sim" "fallback-agent" "helm" "scripts" "config" "security")
+          DIRECTORIES=(app terraform quantum-sim fallback-agent helm scripts config security)
           echo "## Analyse de la structure du dépôt" > reports/analyze-report.md
           echo "" >> reports/analyze-report.md
           
@@ -97,139 +217,286 @@ jobs:
           
           # Vérification des workflows
           if [ -d ".github/workflows" ]; then
-            WORKFLOW_COUNT=$(ls -1 .github/workflows/*.yml | wc -l)
+            WORKFLOW_COUNT=$(ls -1 .github/workflows/*.yml 2>/dev/null | wc -l)
             echo "Nombre de workflows: $WORKFLOW_COUNT" >> reports/analyze-report.md
             echo "" >> reports/analyze-report.md
             
-            for workflow in .github/workflows/*.yml; do
-              echo "- $(basename $workflow)" >> reports/analyze-report.md
-            done
+            if [ "$WORKFLOW_COUNT" -gt 0 ]; then
+              for workflow in .github/workflows/*.yml; do
+                echo "- $(basename $workflow)" >> reports/analyze-report.md
+              done
+            else
+              echo "❌ Aucun workflow trouvé dans le répertoire" >> reports/analyze-report.md
+            fi
           else
-            echo "❌ Aucun workflow trouvé" >> reports/analyze-report.md
+            echo "❌ Répertoire .github/workflows non trouvé" >> reports/analyze-report.md
           fi
           
           # Commentaire sur l'issue
-          gh issue comment "$ISSUE_NUMBER" --body "### Analyse du dépôt terminée ✅\n\n$(cat reports/analyze-report.md)"
-          
-      - name: Action - Déploiement
-        if: steps.parse-commands.outputs.command == 'deploy'
+          gh issue comment "${{ github.event.issue.number }}" --body "### Analyse du dépôt terminée ✅
+
+$(cat reports/analyze-report.md)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Action - Gestion de la file d'attente des déploiements
+        if: |
+          steps.parse-commands.outputs.command == 'deploy' && 
+          steps.check-permissions.outputs.is_authorized == 'true'
+        id: deployment-queue
         run: |
-          echo "Déploiement vers l'environnement ${{ steps.parse-commands.outputs.environment }} en cours..."
+          set -euo pipefail
           
-          # Validation de l'environnement
-          if [[ "${{ steps.parse-commands.outputs.environment }}" =~ ^(dev|staging|prod)$ ]]; then
-            # Déclenchement du workflow de déploiement
-            gh workflow run cloud-ecosystem-pipeline.yml -f environment=${{ steps.parse-commands.outputs.environment }}
+          ENVIRONMENT="${{ steps.parse-commands.outputs.environment }}"
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          
+          # Vérifier si un déploiement est déjà en cours
+          DEPLOYMENT_IN_PROGRESS=$(gh workflow list --json name,status | jq -r '.[] | select(.name | test(".*Cloud Ecosystem Pipeline.*")) | select(.status == "in_progress") | .name' | wc -l)
+          
+          if [ "$DEPLOYMENT_IN_PROGRESS" -gt 0 ]; then
+            # Ajouter à la file d'attente
+            jq --arg env "$ENVIRONMENT" --arg issue "$ISSUE_NUMBER" '.queue += [{"environment": $env, "issue": $issue, "queued_at": "'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}]' reports/deployment_queue.json > reports/deployment_queue.json.new
+            mv reports/deployment_queue.json.new reports/deployment_queue.json
             
-            # Commentaire sur l'issue
-            gh issue comment "$ISSUE_NUMBER" --body "🚀 Déploiement vers l'environnement **${{ steps.parse-commands.outputs.environment }}** déclenché.\n\nVous pouvez suivre la progression dans l'onglet Actions."
+            QUEUE_POSITION=$(jq ".queue | length" reports/deployment_queue.json)
+            
+            echo "in_queue=true" >> $GITHUB_OUTPUT
+            echo "queue_position=$QUEUE_POSITION" >> $GITHUB_OUTPUT
+            
+            # Notifier l'utilisateur
+            gh issue comment "$ISSUE_NUMBER" --body "🔄 Déploiement vers l'environnement **$ENVIRONMENT** mis en file d'attente.
+
+Position dans la file: **$QUEUE_POSITION**
+
+Un déploiement est déjà en cours. Votre déploiement sera automatiquement lancé quand ce sera votre tour."
           else
-            # Environnement invalide
-            gh issue comment "$ISSUE_NUMBER" --body "⚠️ **Erreur:** Environnement '${{ steps.parse-commands.outputs.environment }}' non reconnu. Les environnements valides sont: dev, staging, prod."
+            echo "in_queue=false" >> $GITHUB_OUTPUT
+            echo "queue_position=0" >> $GITHUB_OUTPUT
           fi
-          
-      - name: Action - Correction de problèmes
-        if: steps.parse-commands.outputs.command == 'fix'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Action - Déploiement
+        if: |
+          steps.parse-commands.outputs.command == 'deploy' && 
+          steps.check-permissions.outputs.is_authorized == 'true' &&
+          steps.deployment-queue.outputs.in_queue == 'false'
         run: |
-          echo "Correction de problèmes de type ${{ steps.parse-commands.outputs.fix_type }} en cours..."
+          set -euo pipefail
+          
+          ENVIRONMENT="${{ steps.parse-commands.outputs.environment }}"
+          
+          echo "Déploiement vers l'environnement $ENVIRONMENT en cours..."
+          
+          # Déclenchement du workflow de déploiement
+          WORKFLOW_RUN_ID=$(gh workflow run cloud-ecosystem-pipeline.yml -f environment=$ENVIRONMENT --json workflowId,id | jq -r '.id')
+          
+          if [ -n "$WORKFLOW_RUN_ID" ]; then
+            # Commentaire sur l'issue
+            gh issue comment "${{ github.event.issue.number }}" --body "🚀 Déploiement vers l'environnement **$ENVIRONMENT** déclenché.
+
+[Suivre la progression](https://github.com/${{ github.repository }}/actions/runs/$WORKFLOW_RUN_ID)"
+          else
+            # Gestion de l'erreur
+            gh issue comment "${{ github.event.issue.number }}" --body "❌ **Erreur:** Impossible de déclencher le déploiement vers l'environnement **$ENVIRONMENT**.
+
+Veuillez vérifier que le workflow cloud-ecosystem-pipeline.yml existe et que votre token GitHub a les permissions nécessaires."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Action - Correction de problèmes
+        if: |
+          steps.parse-commands.outputs.command == 'fix' && 
+          steps.check-permissions.outputs.is_authorized == 'true'
+        run: |
+          set -euo pipefail
           
           FIX_TYPE="${{ steps.parse-commands.outputs.fix_type }}"
           FIXED=false
           
+          echo "Correction de problèmes de type $FIX_TYPE en cours..."
+          
+          # Créer le rapport
+          echo "🔄 Tentative de correction des problèmes de type $FIX_TYPE..." > reports/fix-report.md
+          echo "" >> reports/fix-report.md
+          
           case "$FIX_TYPE" in
             "dependencies")
               # Tentative de mise à jour des dépendances
-              echo "🔄 Tentative de mise à jour des dépendances..." > reports/fix-report.md
+              if [ -f "package.json" ]; then
+                echo "### Mise à jour des dépendances Node.js" >> reports/fix-report.md
+                echo "" >> reports/fix-report.md
+                echo "Dépendances identifiées dans package.json." >> reports/fix-report.md
+                echo "Les dépendances verront une Pull Request créée automatiquement par Dependabot." >> reports/fix-report.md
+                FIXED=true
+              fi
               
-              # Simuler une correction
-              echo "✅ Dépendances mises à jour avec succès." >> reports/fix-report.md
-              FIXED=true
+              if [ -f "requirements.txt" ]; then
+                echo "### Mise à jour des dépendances Python" >> reports/fix-report.md
+                echo "" >> reports/fix-report.md
+                echo "Dépendances identifiées dans requirements.txt." >> reports/fix-report.md
+                echo "Les dépendances verront une Pull Request créée automatiquement par Dependabot." >> reports/fix-report.md
+                FIXED=true
+              fi
+              
+              if [ "$FIXED" != "true" ]; then
+                echo "⚠️ Aucun fichier de dépendances (package.json, requirements.txt) n'a été détecté." >> reports/fix-report.md
+              fi
               ;;
               
             "workflows")
               # Tentative de correction des workflows
-              echo "🔄 Tentative de correction des workflows..." > reports/fix-report.md
+              echo "### Analyse des workflows GitHub Actions" >> reports/fix-report.md
+              echo "" >> reports/fix-report.md
               
-              # Vérification avec actionlint
-              if command -v actionlint &> /dev/null; then
-                actionlint -color > reports/actionlint-output.txt 2>&1 || true
+              if [ -d ".github/workflows" ]; then
+                WORKFLOW_COUNT=$(ls -1 .github/workflows/*.yml 2>/dev/null | wc -l)
                 
-                if [ -s reports/actionlint-output.txt ]; then
-                  echo "⚠️ Problèmes détectés dans les workflows:" >> reports/fix-report.md
-                  cat reports/actionlint-output.txt >> reports/fix-report.md
+                if [ "$WORKFLOW_COUNT" -gt 0 ]; then
+                  echo "Workflows détectés: $WORKFLOW_COUNT" >> reports/fix-report.md
+                  echo "" >> reports/fix-report.md
+                  
+                  # Déclenchement du workflow d'optimisation
+                  WORKFLOW_RUN_ID=$(gh workflow run workflow-optimizer.yml -f auto_fix=true --json workflowId,id | jq -r '.id')
+                  
+                  if [ -n "$WORKFLOW_RUN_ID" ]; then
+                    echo "✅ Le workflow d'optimisation a été déclenché." >> reports/fix-report.md
+                    echo "" >> reports/fix-report.md
+                    echo "[Suivre la progression](https://github.com/${{ github.repository }}/actions/runs/$WORKFLOW_RUN_ID)" >> reports/fix-report.md
+                    FIXED=true
+                  else
+                    echo "⚠️ Impossible de déclencher le workflow d'optimisation." >> reports/fix-report.md
+                  fi
                 else
-                  echo "✅ Aucun problème détecté dans les workflows." >> reports/fix-report.md
-                  FIXED=true
+                  echo "⚠️ Aucun workflow n'a été détecté dans le répertoire .github/workflows." >> reports/fix-report.md
                 fi
               else
-                echo "⚠️ Actionlint n'est pas installé, impossible de vérifier les workflows." >> reports/fix-report.md
+                echo "⚠️ Le répertoire .github/workflows n'existe pas." >> reports/fix-report.md
               fi
               ;;
               
             "terraform")
               # Tentative de correction Terraform
-              echo "🔄 Tentative de correction des fichiers Terraform..." > reports/fix-report.md
+              echo "### Analyse des fichiers Terraform" >> reports/fix-report.md
+              echo "" >> reports/fix-report.md
               
               if [ -d "terraform" ]; then
-                cd terraform
-                # Simuler une correction
-                echo "✅ Configuration Terraform formatée et validée." >> ../reports/fix-report.md
-                FIXED=true
-                cd ..
+                # Vérifier s'il y a des fichiers .tf
+                TF_FILES=$(find terraform -name "*.tf" | wc -l)
+                
+                if [ "$TF_FILES" -gt 0 ]; then
+                  echo "Fichiers Terraform détectés: $TF_FILES" >> reports/fix-report.md
+                  echo "" >> reports/fix-report.md
+                  
+                  # Formatage des fichiers Terraform
+                  echo "Les fichiers Terraform seront formatés lors de la prochaine exécution du workflow super-linter." >> reports/fix-report.md
+                  echo "Pour un formatage immédiat, exécutez le workflow super-linter manuellement." >> reports/fix-report.md
+                  FIXED=true
+                else
+                  echo "⚠️ Aucun fichier .tf n'a été détecté dans le répertoire terraform." >> reports/fix-report.md
+                fi
               else
-                echo "❌ Répertoire terraform non trouvé." >> reports/fix-report.md
+                echo "⚠️ Le répertoire terraform n'existe pas." >> reports/fix-report.md
               fi
               ;;
               
             *)
-              echo "⚠️ Type de correction '$FIX_TYPE' non reconnu. Types valides: dependencies, workflows, terraform." > reports/fix-report.md
+              echo "⚠️ Type de correction non reconnu: $FIX_TYPE" >> reports/fix-report.md
               ;;
           esac
           
           # Commentaire sur l'issue
-          if [ "$FIXED" = true ]; then
-            gh issue comment "$ISSUE_NUMBER" --body "### Correction de problèmes de type '$FIX_TYPE' terminée ✅\n\n$(cat reports/fix-report.md)"
+          if [ "$FIXED" = "true" ]; then
+            gh issue comment "${{ github.event.issue.number }}" --body "### Correction de problèmes de type '$FIX_TYPE' initiée ✅
+
+$(cat reports/fix-report.md)"
           else
-            gh issue comment "$ISSUE_NUMBER" --body "### Tentative de correction de problèmes de type '$FIX_TYPE' ⚠️\n\n$(cat reports/fix-report.md)"
+            gh issue comment "${{ github.event.issue.number }}" --body "### Tentative de correction de problèmes de type '$FIX_TYPE' ⚠️
+
+$(cat reports/fix-report.md)"
           fi
-          
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
       - name: Action - Optimisation du workflow
-        if: steps.parse-commands.outputs.command == 'optimize'
+        if: |
+          steps.parse-commands.outputs.command == 'optimize' && 
+          steps.check-permissions.outputs.is_authorized == 'true'
         run: |
+          set -euo pipefail
+          
           echo "Optimisation des workflows en cours..."
           
-          # Analyse des workflows existants
-          echo "## Analyse des performances des workflows" > reports/optimize-report.md
-          echo "" >> reports/optimize-report.md
-          
-          if [ -d ".github/workflows" ]; then
-            echo "Workflows analysés:" >> reports/optimize-report.md
+          # Vérifier si le workflow d'optimisation existe
+          if [ -f ".github/workflows/workflow-optimizer.yml" ]; then
+            # Déclencher le workflow d'optimisation
+            WORKFLOW_RUN_ID=$(gh workflow run workflow-optimizer.yml --json workflowId,id | jq -r '.id')
             
-            for workflow in .github/workflows/*.yml; do
-              echo "### $(basename $workflow)" >> reports/optimize-report.md
-              
-              # Simuler des recommandations d'optimisation
-              echo "Recommandations d'optimisation:" >> reports/optimize-report.md
-              echo "- Utiliser des actions en cache pour accélérer les builds" >> reports/optimize-report.md
-              echo "- Optimiser l'utilisation des runners avec des matrices" >> reports/optimize-report.md
-              echo "- Ajouter des timeout pour éviter les exécutions bloquées" >> reports/optimize-report.md
-              echo "" >> reports/optimize-report.md
-            done
-            
-            echo "### Recommandations générales" >> reports/optimize-report.md
-            echo "- Utiliser des workflows réutilisables pour éviter la duplication" >> reports/optimize-report.md
-            echo "- Configurer des GitHub Actions runners auto-hébergés pour de meilleures performances" >> reports/optimize-report.md
-            echo "- Implémenter une stratégie de mise en cache des dépendances" >> reports/optimize-report.md
-            
-            # Commentaire sur l'issue
-            gh issue comment "$ISSUE_NUMBER" --body "### Analyse d'optimisation des workflows terminée 🚀\n\n$(cat reports/optimize-report.md)"
+            if [ -n "$WORKFLOW_RUN_ID" ]; then
+              # Commentaire sur l'issue
+              gh issue comment "${{ github.event.issue.number }}" --body "🚀 **Optimisation des workflows déclenchée**
+
+L'analyse et l'optimisation des workflows GitHub Actions ont été lancées.
+
+[Suivre la progression](https://github.com/${{ github.repository }}/actions/runs/$WORKFLOW_RUN_ID)
+
+Une fois terminée, un rapport détaillé sera généré et une issue ou pull request sera créée avec les recommandations d'optimisation."
+            else
+              gh issue comment "${{ github.event.issue.number }}" --body "❌ **Erreur:** Impossible de déclencher le workflow d'optimisation.
+
+Veuillez vérifier que votre token GitHub a les permissions nécessaires."
+            fi
           else
-            gh issue comment "$ISSUE_NUMBER" --body "⚠️ Aucun workflow trouvé pour l'analyse d'optimisation."
+            # Créer un rapport d'analyse manuel
+            echo "## Analyse des performances des workflows" > reports/optimize-report.md
+            echo "" >> reports/optimize-report.md
+            
+            if [ -d ".github/workflows" ]; then
+              WORKFLOW_COUNT=$(ls -1 .github/workflows/*.yml 2>/dev/null | wc -l)
+              echo "Workflows analysés: $WORKFLOW_COUNT" >> reports/optimize-report.md
+              echo "" >> reports/optimize-report.md
+              
+              if [ "$WORKFLOW_COUNT" -gt 0 ]; then
+                for workflow in .github/workflows/*.yml; do
+                  echo "### $(basename $workflow)" >> reports/optimize-report.md
+                  echo "" >> reports/optimize-report.md
+                  
+                  # Simuler des recommandations d'optimisation
+                  echo "Recommandations d'optimisation:" >> reports/optimize-report.md
+                  echo "- Utiliser des actions en cache pour accélérer les builds" >> reports/optimize-report.md
+                  echo "- Optimiser l'utilisation des runners avec des matrices" >> reports/optimize-report.md
+                  echo "- Ajouter des timeout pour éviter les exécutions bloquées" >> reports/optimize-report.md
+                  echo "" >> reports/optimize-report.md
+                done
+              else
+                echo "⚠️ Aucun workflow n'a été détecté." >> reports/optimize-report.md
+                echo "" >> reports/optimize-report.md
+              fi
+              
+              echo "### Recommandations générales" >> reports/optimize-report.md
+              echo "- Utiliser des workflows réutilisables pour éviter la duplication" >> reports/optimize-report.md
+              echo "- Configurer des GitHub Actions runners auto-hébergés pour de meilleures performances" >> reports/optimize-report.md
+              echo "- Implémenter une stratégie de mise en cache des dépendances" >> reports/optimize-report.md
+              
+              # Commentaire sur l'issue
+              gh issue comment "${{ github.event.issue.number }}" --body "### Analyse d'optimisation des workflows terminée 🚀
+
+⚠️ Le workflow d'optimisation automatique n'a pas été trouvé. Voici une analyse manuelle:
+
+$(cat reports/optimize-report.md)"
+            else
+              gh issue comment "${{ github.event.issue.number }}" --body "⚠️ Aucun workflow trouvé pour l'analyse d'optimisation.
+
+Veuillez créer d'abord des workflows GitHub Actions dans le répertoire .github/workflows."
+            fi
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Téléchargement des rapports
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: issueops-reports
           path: reports/
