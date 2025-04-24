@@ -12,23 +12,60 @@ on:
         type: boolean
         required: false
         default: false
+      branch:
+        description: 'Branche pour les corrections (défaut: workflow-optimizer-YYYYMMDD)'
+        required: false
+        default: ''
   schedule:
     - cron: '0 0 * * 0'  # Exécution hebdomadaire le dimanche à minuit
+
+# Définition de la concurrence pour éviter les exécutions parallèles inutiles
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Définition des permissions minimales requises
+permissions:
+  contents: write  # Besoin d'écrire pour créer des branches et des commits
+  pull-requests: write  # Besoin d'écrire pour créer des pull requests
+  issues: write  # Besoin d'écrire pour créer des issues
+  actions: read  # Besoin de lire pour vérifier les workflows
 
 jobs:
   analyze-workflows:
     name: Analyser et Optimiser les Workflows
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout du code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       
+      - name: Configuration de Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: '.github/optimizer/requirements.txt'
+      
       - name: Configuration de l'environnement
+        id: config
         run: |
+          set -euo pipefail
+          
           mkdir -p reports
           mkdir -p .github/optimizer
+          
+          # Création du fichier de dépendances
+          cat > .github/optimizer/requirements.txt << 'EOF'
+          pyyaml==6.0.1
+          jsonschema==4.19.1
+          jq==1.6.0
+          EOF
+          
+          # Installation des dépendances
+          pip install -r .github/optimizer/requirements.txt
           
           # Déterminer les workflows à analyser
           if [ "${{ github.event.inputs.target_workflows }}" = "all" ] || [ -z "${{ github.event.inputs.target_workflows }}" ]; then
@@ -43,34 +80,47 @@ jobs:
           else 
             echo "AUTO_FIX=false" >> $GITHUB_ENV
           fi
+          
+          # Configuration de la branche
+          if [ -n "${{ github.event.inputs.branch }}" ]; then
+            echo "BRANCH_NAME=${{ github.event.inputs.branch }}" >> $GITHUB_ENV
+          else
+            TIMESTAMP=$(date +%Y%m%d%H%M%S)
+            echo "BRANCH_NAME=workflow-optimizer-${TIMESTAMP}" >> $GITHUB_ENV
+          fi
+          
+          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
       
       - name: Inventaire des workflows
         id: inventory
         run: |
+          set -euo pipefail
+          
           echo "## Inventaire des workflows GitHub Actions" > reports/workflow-inventory.md
           echo "" >> reports/workflow-inventory.md
           
           if [ ! -d ".github/workflows" ]; then
             echo "❌ Aucun workflow trouvé" >> reports/workflow-inventory.md
             echo "WORKFLOWS_FOUND=false" >> $GITHUB_ENV
-            echo "::set-output name=workflows_found::false"
+            echo "workflows_found=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           
           WORKFLOWS=()
           
           if [ "$TARGET_WORKFLOWS" = "all" ]; then
+            # Exclure le workflow actuel pour éviter des modifications en boucle
             for workflow in .github/workflows/*.yml; do
-              if [ -f "$workflow" ]; then
-                WORKFLOWS+=("$(basename $workflow)")
+              if [ -f "$workflow" ] && [[ "$(basename $workflow)" != "$(basename $GITHUB_WORKFLOW)" ]]; then
+                WORKFLOWS+=($(basename $workflow))
               fi
             done
           else
             IFS=',' read -ra WORKFLOW_LIST <<< "$TARGET_WORKFLOWS"
             for workflow in "${WORKFLOW_LIST[@]}"; do
               workflow_file=".github/workflows/${workflow// /}.yml"
-              if [ -f "$workflow_file" ]; then
-                WORKFLOWS+=("$(basename $workflow_file)")
+              if [ -f "$workflow_file" ] && [[ "$(basename $workflow_file)" != "$(basename $GITHUB_WORKFLOW)" ]]; then
+                WORKFLOWS+=($(basename $workflow_file))
               fi
             done
           fi
@@ -78,7 +128,7 @@ jobs:
           if [ ${#WORKFLOWS[@]} -eq 0 ]; then
             echo "❌ Aucun workflow cible trouvé" >> reports/workflow-inventory.md
             echo "WORKFLOWS_FOUND=false" >> $GITHUB_ENV
-            echo "::set-output name=workflows_found::false"
+            echo "workflows_found=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           
@@ -88,42 +138,70 @@ jobs:
           done
           
           # Sauvegarder la liste pour les étapes suivantes
-          echo "${WORKFLOWS[@]}" > .github/optimizer/workflows.txt
+          printf "%s\n" "${WORKFLOWS[@]}" > .github/optimizer/workflows.txt
           echo "WORKFLOWS_FOUND=true" >> $GITHUB_ENV
-          echo "::set-output name=workflows_found::true"
+          echo "workflows_found=true" >> $GITHUB_OUTPUT
+          echo "workflow_count=${#WORKFLOWS[@]}" >> $GITHUB_OUTPUT
       
       - name: Installation des dépendances d'analyse
         if: env.WORKFLOWS_FOUND == 'true'
         run: |
-          # Installation des outils nécessaires
-          pip install pyyaml
+          set -euo pipefail
           
-          # Créer un script d'analyse
+          # Création d'un script d'analyse plus complet et robuste
           cat > .github/optimizer/analyze_workflow.py << 'EOF'
 #!/usr/bin/env python3
 import sys
 import yaml
 import json
 import os
+import re
 from pathlib import Path
+import jsonschema
+from yaml.parser import ParserError
+
+def safe_load_yaml(file_path):
+    """Charge un fichier YAML de manière sécurisée avec gestion des erreurs."""
+    try:
+        with open(file_path, 'r') as f:
+            content = yaml.safe_load(f)
+        return content, None
+    except ParserError as e:
+        error_line = str(e).split('\n')[0].split('line ')[1].split(',')[0]
+        return None, f"Erreur de syntaxe YAML à la ligne {error_line}"
+    except Exception as e:
+        return None, str(e)
 
 def analyze_workflow(workflow_path):
     """Analyse un workflow GitHub Actions et propose des optimisations."""
-    with open(workflow_path, 'r') as f:
-        try:
-            content = yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            return {
-                "status": "error",
-                "message": f"Erreur lors de l'analyse du YAML: {str(e)}"
-            }
+    content, error = safe_load_yaml(workflow_path)
+    if error:
+        return {
+            "status": "error",
+            "message": f"Erreur lors de l'analyse du YAML: {error}",
+            "issues": [f"Erreur de syntaxe YAML: {error}"],
+            "optimizations": []
+        }
+    
+    if not content:
+        return {
+            "status": "error",
+            "message": "Le fichier YAML est vide ou mal formaté",
+            "issues": ["Le fichier YAML est vide ou mal formaté"],
+            "optimizations": []
+        }
     
     issues = []
     optimizations = []
+    warnings = []
+    security_issues = []
     
     # Vérifier si le workflow est bien structuré
     if 'name' not in content:
         issues.append("Le workflow n'a pas de nom défini")
+    
+    if 'on' not in content:
+        issues.append("Le workflow ne définit pas de déclencheurs (on)")
     
     if 'jobs' not in content:
         issues.append("Le workflow ne contient pas de jobs")
@@ -131,8 +209,40 @@ def analyze_workflow(workflow_path):
             "status": "error",
             "message": "Structure de workflow invalide",
             "issues": issues,
+            "warnings": warnings,
+            "security_issues": security_issues,
             "optimizations": []
         }
+    
+    # Vérifier les permissions globales
+    if 'permissions' not in content:
+        security_issues.append("Aucune permission définie au niveau du workflow - les permissions par défaut pourraient être trop permissives")
+        optimizations.append({
+            "type": "security",
+            "description": "Ajouter des permissions définies explicitement au niveau du workflow",
+            "fix": {
+                "path": ["permissions"],
+                "value": {
+                    "contents": "read",
+                    "actions": "read",
+                }
+            }
+        })
+    
+    # Vérifier la concurrence
+    if 'concurrency' not in content:
+        warnings.append("Aucune gestion de concurrence définie - les exécutions parallèles peuvent causer des conflits")
+        optimizations.append({
+            "type": "concurrency",
+            "description": "Ajouter une configuration de concurrence pour éviter les exécutions parallèles conflictuelles",
+            "fix": {
+                "path": ["concurrency"],
+                "value": {
+                    "group": "${{ github.workflow }}-${{ github.ref }}",
+                    "cancel-in-progress": True
+                }
+            }
+        })
     
     # Analyser chaque job
     for job_id, job in content.get('jobs', {}).items():
@@ -140,146 +250,408 @@ def analyze_workflow(workflow_path):
         if 'runs-on' not in job:
             issues.append(f"Le job '{job_id}' n'a pas de runner spécifié")
         
-        # Vérifier les timeouts
+        # Vérifier les timeout
         if 'timeout-minutes' not in job:
+            warnings.append(f"Le job '{job_id}' n'a pas de timeout défini")
             optimizations.append({
                 "type": "timeout",
                 "job": job_id,
                 "description": f"Ajouter un timeout au job '{job_id}' pour éviter les exécutions bloquées",
                 "fix": {
                     "path": ["jobs", job_id, "timeout-minutes"],
-                    "value": 60  # Valeur par défaut de 60 minutes
+                    "value": 15  # Valeur par défaut de 15 minutes
                 }
             })
         
-        # Vérifier si checkout est utilisé avec fetch-depth
+        # Vérifier les permissions au niveau du job
+        if 'permissions' not in job and 'permissions' not in content:
+            security_issues.append(f"Aucune permission définie pour le job '{job_id}'")
+        
+        # Vérifier les étapes
         steps = job.get('steps', [])
+        
+        # Vérifier si les étapes sont présentes
+        if not steps:
+            issues.append(f"Le job '{job_id}' ne contient aucune étape")
+            continue
+        
         has_checkout = False
+        has_cache = False
+        has_setup_tools = set()
+        
+        # Analyser chaque étape
         for i, step in enumerate(steps):
-            if step.get('uses', '').startswith('actions/checkout@'):
-                has_checkout = True
-                if 'with' not in step or 'fetch-depth' not in step.get('with', {}):
+            # Étapes sans nom
+            if 'name' not in step:
+                warnings.append(f"Étape sans nom dans le job '{job_id}' (index {i})")
+            
+            # Vérifier les actions utilisées
+            if 'uses' in step:
+                action = step['uses']
+                
+                # Vérifier l'action checkout
+                if action.startswith('actions/checkout@'):
+                    has_checkout = True
+                    version = action.split('@')[1]
+                    if version != 'v4':
+                        optimizations.append({
+                            "type": "action_version",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Mettre à jour actions/checkout de {version} vers v4 dans le job '{job_id}'",
+                            "fix": {
+                                "path": ["jobs", job_id, "steps", i, "uses"],
+                                "value": "actions/checkout@v4"
+                            }
+                        })
+                    
+                    # Vérifier fetch-depth
+                    if 'with' not in step or 'fetch-depth' not in step.get('with', {}):
+                        optimizations.append({
+                            "type": "checkout",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Optimiser le checkout dans le job '{job_id}' en ajoutant fetch-depth: 1",
+                            "fix": {
+                                "path": ["jobs", job_id, "steps", i, "with"],
+                                "value": step.get('with', {}) | {"fetch-depth": 1}
+                            }
+                        })
+                
+                # Vérifier les actions de configuration
+                elif action.startswith('actions/setup-python@'):
+                    has_setup_tools.add('python')
+                    version = action.split('@')[1]
+                    if version != 'v5':
+                        optimizations.append({
+                            "type": "action_version",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Mettre à jour actions/setup-python de {version} vers v5 dans le job '{job_id}'",
+                            "fix": {
+                                "path": ["jobs", job_id, "steps", i, "uses"],
+                                "value": "actions/setup-python@v5"
+                            }
+                        })
+                    
+                    # Vérifier cache
+                    if 'with' in step and 'cache' not in step.get('with', {}):
+                        optimizations.append({
+                            "type": "cache",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Activer le cache pip dans setup-python du job '{job_id}'",
+                            "fix": {
+                                "path": ["jobs", job_id, "steps", i, "with", "cache"],
+                                "value": "pip"
+                            }
+                        })
+                
+                elif action.startswith('actions/setup-node@'):
+                    has_setup_tools.add('node')
+                    version = action.split('@')[1]
+                    if version != 'v4':
+                        optimizations.append({
+                            "type": "action_version",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Mettre à jour actions/setup-node de {version} vers v4 dans le job '{job_id}'",
+                            "fix": {
+                                "path": ["jobs", job_id, "steps", i, "uses"],
+                                "value": "actions/setup-node@v4"
+                            }
+                        })
+                    
+                    # Vérifier cache
+                    if 'with' in step and 'cache' not in step.get('with', {}):
+                        optimizations.append({
+                            "type": "cache",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Activer le cache npm dans setup-node du job '{job_id}'",
+                            "fix": {
+                                "path": ["jobs", job_id, "steps", i, "with", "cache"],
+                                "value": "npm"
+                            }
+                        })
+                
+                elif action.startswith('actions/upload-artifact@'):
+                    version = action.split('@')[1]
+                    if version != 'v4':
+                        optimizations.append({
+                            "type": "action_version",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Mettre à jour actions/upload-artifact de {version} vers v4 dans le job '{job_id}'",
+                            "fix": {
+                                "path": ["jobs", job_id, "steps", i, "uses"],
+                                "value": "actions/upload-artifact@v4"
+                            }
+                        })
+                
+                elif action.startswith('actions/download-artifact@'):
+                    version = action.split('@')[1]
+                    if version != 'v4':
+                        optimizations.append({
+                            "type": "action_version",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Mettre à jour actions/download-artifact de {version} vers v4 dans le job '{job_id}'",
+                            "fix": {
+                                "path": ["jobs", job_id, "steps", i, "uses"],
+                                "value": "actions/download-artifact@v4"
+                            }
+                        })
+                
+                elif 'cache' in action.lower():
+                    has_cache = True
+            
+            # Vérifier les commandes run
+            if 'run' in step:
+                run_command = step['run']
+                
+                # Détecter la syntaxe obsolète dans les commandes run
+                if '::set-output name=' in run_command:
+                    security_issues.append(f"Utilisation de la syntaxe obsolète '::set-output' dans le job '{job_id}' (étape {i})")
                     optimizations.append({
-                        "type": "checkout",
+                        "type": "deprecated_syntax",
                         "job": job_id,
                         "step": i,
-                        "description": f"Optimiser le checkout dans le job '{job_id}' en ajoutant fetch-depth: 1",
-                        "fix": {
-                            "path": ["jobs", job_id, "steps", i, "with", "fetch-depth"],
-                            "value": 1
-                        }
+                        "description": f"Remplacer '::set-output name=' par 'echo \"name=value\" >> $GITHUB_OUTPUT' dans le job '{job_id}'",
+                        "script_fix": True  # Nécessite un script spécial pour remplacer cette syntaxe
                     })
+                
+                if '::save-state name=' in run_command:
+                    security_issues.append(f"Utilisation de la syntaxe obsolète '::save-state' dans le job '{job_id}' (étape {i})")
+                    optimizations.append({
+                        "type": "deprecated_syntax",
+                        "job": job_id,
+                        "step": i,
+                        "description": f"Remplacer '::save-state name=' par 'echo \"name=value\" >> $GITHUB_STATE' dans le job '{job_id}'",
+                        "script_fix": True
+                    })
+                
+                if '::add-path::' in run_command:
+                    security_issues.append(f"Utilisation de la syntaxe obsolète '::add-path' dans le job '{job_id}' (étape {i})")
+                    optimizations.append({
+                        "type": "deprecated_syntax",
+                        "job": job_id,
+                        "step": i,
+                        "description": f"Remplacer '::add-path::' par 'echo \"path\" >> $GITHUB_PATH' dans le job '{job_id}'",
+                        "script_fix": True
+                    })
+                
+                if '::add-mask::' in run_command:
+                    security_issues.append(f"Utilisation de la syntaxe obsolète '::add-mask' dans le job '{job_id}' (étape {i})")
+                    optimizations.append({
+                        "type": "deprecated_syntax",
+                        "job": job_id,
+                        "step": i,
+                        "description": f"Remplacer '::add-mask::' par 'echo \"::add-mask::secret\"' dans le job '{job_id}'",
+                        "script_fix": True
+                    })
+                
+                # Détecter les scripts bash sans set -e
+                if run_command.strip().startswith('#!/bin/bash') or run_command.strip().startswith('#!/usr/bin/env bash'):
+                    if 'set -e' not in run_command and 'set -o errexit' not in run_command:
+                        warnings.append(f"Script bash sans 'set -e' dans le job '{job_id}' (étape {i})")
+                        optimizations.append({
+                            "type": "bash_safety",
+                            "job": job_id,
+                            "step": i,
+                            "description": f"Ajouter 'set -euo pipefail' au script bash dans le job '{job_id}' pour une meilleure gestion des erreurs",
+                            "script_fix": True
+                        })
         
-        # Vérifier si des actions de cache sont utilisées
-        has_cache = any('cache' in step.get('uses', '') for step in steps)
-        if not has_cache and has_checkout:
-            # Identifier le langage pour suggérer un cache approprié
-            uses_python = any('python' in step.get('uses', '') or 'pip' in str(step) for step in steps)
-            uses_node = any('node' in step.get('uses', '') or 'npm' in str(step) or 'yarn' in str(step) for step in steps)
-            
-            if uses_python:
-                optimizations.append({
-                    "type": "cache",
-                    "job": job_id,
-                    "description": f"Ajouter un cache pour Python dans le job '{job_id}'",
-                    "fix": {
-                        "path": ["jobs", job_id, "steps"],
-                        "value": {
-                            "uses": "actions/cache@v3",
-                            "with": {
-                                "path": "~/.cache/pip",
-                                "key": "${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}",
-                                "restore-keys": "${{ runner.os }}-pip-"
-                            }
-                        },
-                        "position": 1  # Après checkout
-                    }
-                })
-            elif uses_node:
-                optimizations.append({
-                    "type": "cache",
-                    "job": job_id,
-                    "description": f"Ajouter un cache pour Node.js dans le job '{job_id}'",
-                    "fix": {
-                        "path": ["jobs", job_id, "steps"],
-                        "value": {
-                            "uses": "actions/cache@v3",
-                            "with": {
-                                "path": "~/.npm",
-                                "key": "${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}",
-                                "restore-keys": "${{ runner.os }}-node-"
-                            }
-                        },
-                        "position": 1  # Après checkout
-                    }
-                })
+        # Vérifier si checkout est utilisé mais pas en première position
+        if has_checkout and not steps[0].get('uses', '').startswith('actions/checkout@'):
+            warnings.append(f"L'action checkout n'est pas en première position dans le job '{job_id}'")
+        
+        # Recommandations spécifiques basées sur les dépendances détectées
+        if 'python' in has_setup_tools and not has_cache:
+            optimizations.append({
+                "type": "add_cache",
+                "job": job_id,
+                "description": f"Ajouter un cache pour Python dans le job '{job_id}'",
+                "fix": {
+                    "path": ["jobs", job_id, "steps"],
+                    "value": {
+                        "name": "Configurer le cache pip",
+                        "uses": "actions/cache@v3",
+                        "with": {
+                            "path": "~/.cache/pip",
+                            "key": "${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}",
+                            "restore-keys": "${{ runner.os }}-pip-"
+                        }
+                    },
+                    "position": 1 if has_checkout else 0
+                }
+            })
+        
+        if 'node' in has_setup_tools and not has_cache:
+            optimizations.append({
+                "type": "add_cache",
+                "job": job_id,
+                "description": f"Ajouter un cache pour Node.js dans le job '{job_id}'",
+                "fix": {
+                    "path": ["jobs", job_id, "steps"],
+                    "value": {
+                        "name": "Configurer le cache npm",
+                        "uses": "actions/cache@v3",
+                        "with": {
+                            "path": "~/.npm",
+                            "key": "${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}",
+                            "restore-keys": "${{ runner.os }}-node-"
+                        }
+                    },
+                    "position": 1 if has_checkout else 0
+                }
+            })
     
-    # Analyser la structure globale
+    # Analyse de la structure globale
     if 'on' in content:
         triggers = content['on']
-        if isinstance(triggers, dict) and 'schedule' in triggers:
+        if isinstance(triggers, dict) and ('push' in triggers or 'pull_request' in triggers or 'schedule' in triggers) and 'workflow_dispatch' not in triggers:
             # Vérifier si un schedule est défini sans workflow_dispatch
-            if 'workflow_dispatch' not in triggers:
-                optimizations.append({
-                    "type": "trigger",
-                    "description": "Ajouter workflow_dispatch pour permettre l'exécution manuelle",
-                    "fix": {
-                        "path": ["on", "workflow_dispatch"],
-                        "value": {}
-                    }
-                })
+            optimizations.append({
+                "type": "trigger",
+                "description": "Ajouter workflow_dispatch pour permettre l'exécution manuelle",
+                "fix": {
+                    "path": ["on", "workflow_dispatch"],
+                    "value": {}
+                }
+            })
+    
+    # Prioriser et filtrer les optimisations
+    if optimizations:
+        # Trier les optimisations par importance
+        priority_order = {
+            "security": 0,
+            "deprecated_syntax": 1,
+            "action_version": 2,
+            "timeout": 3,
+            "concurrency": 4,
+            "checkout": 5,
+            "cache": 6,
+            "add_cache": 7,
+            "bash_safety": 8,
+            "trigger": 9
+        }
+        
+        optimizations.sort(key=lambda x: priority_order.get(x["type"], 100))
     
     return {
         "status": "success",
         "issues": issues,
+        "warnings": warnings,
+        "security_issues": security_issues,
         "optimizations": optimizations
     }
 
+def fix_deprecated_syntax(file_path, report):
+    """Corrige la syntaxe obsolète dans les fichiers de workflow."""
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    # Correction de ::set-output
+    content = re.sub(r'::set-output name=([^:]+)::(.*?)(?:\s|$)', r'echo "\1=\2" >> $GITHUB_OUTPUT', content)
+    
+    # Correction de ::save-state
+    content = re.sub(r'::save-state name=([^:]+)::(.*?)(?:\s|$)', r'echo "\1=\2" >> $GITHUB_STATE', content)
+    
+    # Correction de ::add-path
+    content = re.sub(r'::add-path::(.*?)(?:\s|$)', r'echo "\1" >> $GITHUB_PATH', content)
+    
+    # Correction de ::add-mask
+    content = re.sub(r'::add-mask::(.*?)(?:\s|$)', r'echo "::add-mask::\1"', content)
+    
+    # Ajout de set -euo pipefail aux scripts bash
+    def add_bash_safety(match):
+        script = match.group(0)
+        if 'set -e' not in script and 'set -o errexit' not in script:
+            lines = script.split('\n')
+            if len(lines) > 1:
+                return lines[0] + '\nset -euo pipefail\n' + '\n'.join(lines[1:])
+        return script
+    
+    content = re.sub(r'(#!/bin/bash.*?)(\n.*?)+?(?=\n\s*[^#\s]|\Z)', add_bash_safety, content, flags=re.DOTALL)
+    content = re.sub(r'(#!/usr/bin/env bash.*?)(\n.*?)+?(?=\n\s*[^#\s]|\Z)', add_bash_safety, content, flags=re.DOTALL)
+    
+    with open(file_path, 'w') as f:
+        f.write(content)
+    
+    return True
+
 def apply_fixes(workflow_path, optimizations):
     """Applique les correctifs au workflow."""
-    with open(workflow_path, 'r') as f:
-        content = yaml.safe_load(f)
+    content, error = safe_load_yaml(workflow_path)
+    if error:
+        return False, f"Erreur lors du chargement du workflow: {error}"
+    
+    applied_fixes = []
+    script_fixes_needed = False
     
     for opt in optimizations:
+        if opt.get("script_fix"):
+            script_fixes_needed = True
+            continue
+        
         if 'fix' in opt:
             fix = opt['fix']
             path = fix['path']
             value = fix['value']
             
-            # Navigation jusqu'au parent de la clé à modifier
-            current = content
-            for i in range(len(path) - 1):
-                if isinstance(path[i], int) or path[i].isdigit():
-                    idx = int(path[i])
-                    if idx >= len(current):
-                        # Impossible d'appliquer cette correction
-                        continue
-                    current = current[idx]
-                else:
-                    if path[i] not in current:
-                        current[path[i]] = {} if i < len(path) - 2 else []
-                    current = current[path[i]]
-            
-            # Ajouter ou modifier la valeur
-            last_key = path[-1]
-            if isinstance(last_key, int) or last_key.isdigit():
-                idx = int(last_key)
-                if 'position' in fix:
-                    # Insertion à une position spécifique
-                    current.insert(fix['position'], value)
-                else:
-                    if idx >= len(current):
-                        current.append(value)
+            try:
+                # Navigation jusqu'au parent de la clé à modifier
+                current = content
+                for i in range(len(path) - 1):
+                    if isinstance(path[i], int) or (isinstance(path[i], str) and path[i].isdigit()):
+                        idx = int(path[i])
+                        if not isinstance(current, list) or idx >= len(current):
+                            # Impossible d'appliquer cette correction
+                            continue
+                        current = current[idx]
                     else:
-                        current[idx] = value
-            else:
-                current[last_key] = value
+                        if path[i] not in current:
+                            if i < len(path) - 2 and (isinstance(path[i+1], int) or (isinstance(path[i+1], str) and path[i+1].isdigit())):
+                                current[path[i]] = []
+                            else:
+                                current[path[i]] = {}
+                        current = current[path[i]]
+                
+                # Ajouter ou modifier la valeur
+                last_key = path[-1]
+                if isinstance(last_key, int) or (isinstance(last_key, str) and last_key.isdigit()):
+                    idx = int(last_key)
+                    if 'position' in fix:
+                        # Insertion à une position spécifique
+                        if isinstance(current, list):
+                            current.insert(fix['position'], value)
+                            applied_fixes.append(opt["description"])
+                    else:
+                        if not isinstance(current, list):
+                            continue
+                        if idx >= len(current):
+                            current.append(value)
+                        else:
+                            current[idx] = value
+                        applied_fixes.append(opt["description"])
+                else:
+                    current[last_key] = value
+                    applied_fixes.append(opt["description"])
+            except Exception as e:
+                print(f"Erreur lors de l'application de la correction: {e}")
     
     # Écriture du fichier modifié
     with open(workflow_path, 'w') as f:
         yaml.dump(content, f, default_flow_style=False, sort_keys=False)
     
-    return True
+    # Appliquer les correctifs de syntaxe si nécessaire
+    if script_fixes_needed:
+        fix_deprecated_syntax(workflow_path, optimizations)
+        applied_fixes.append("Correction de la syntaxe obsolète")
+    
+    return True, applied_fixes
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
@@ -296,9 +668,10 @@ if __name__ == '__main__':
     analysis = analyze_workflow(workflow_path)
     
     if apply_mode and analysis["status"] == "success" and len(analysis["optimizations"]) > 0:
-        success = apply_fixes(workflow_path, analysis["optimizations"])
+        success, applied_fixes = apply_fixes(workflow_path, analysis["optimizations"])
         if success:
             analysis["fixes_applied"] = True
+            analysis["applied_fixes"] = applied_fixes
         else:
             analysis["fixes_applied"] = False
     
@@ -310,8 +683,16 @@ EOF
         if: env.WORKFLOWS_FOUND == 'true'
         id: analysis
         run: |
+          set -euo pipefail
+          
           echo "## Rapport d'analyse des workflows" > reports/workflow-analysis.md
           echo "" >> reports/workflow-analysis.md
+          
+          TOTAL_ISSUES=0
+          TOTAL_WARNINGS=0
+          TOTAL_SECURITY_ISSUES=0
+          TOTAL_OPTIMIZATIONS=0
+          TOTAL_APPLIED_FIXES=0
           
           while read -r workflow; do
             if [ -z "$workflow" ]; then continue; fi
@@ -322,48 +703,100 @@ EOF
             
             # Exécuter l'analyse
             workflow_path=".github/workflows/$workflow"
-            python .github/optimizer/analyze_workflow.py "$workflow_path" > reports/$workflow.json
+            
+            if [ "$AUTO_FIX" = "true" ]; then
+              python .github/optimizer/analyze_workflow.py "$workflow_path" --apply > "reports/$workflow.json"
+            else
+              python .github/optimizer/analyze_workflow.py "$workflow_path" > "reports/$workflow.json"
+            fi
+            
+            # Vérifier si le fichier JSON a été créé correctement
+            if [ ! -s "reports/$workflow.json" ]; then
+              echo "⚠️ Erreur lors de l'analyse de $workflow" >> reports/workflow-analysis.md
+              echo "" >> reports/workflow-analysis.md
+              continue
+            fi
             
             # Lire et afficher les résultats
-            ISSUES=$(jq -r '.issues | length' reports/$workflow.json)
-            OPTIMIZATIONS=$(jq -r '.optimizations | length' reports/$workflow.json)
+            STATUS=$(jq -r '.status' "reports/$workflow.json")
+            ISSUES=$(jq -r '.issues | length' "reports/$workflow.json")
+            WARNINGS=$(jq -r '.warnings | length // 0' "reports/$workflow.json")
+            SECURITY_ISSUES=$(jq -r '.security_issues | length // 0' "reports/$workflow.json")
+            OPTIMIZATIONS=$(jq -r '.optimizations | length' "reports/$workflow.json")
             
-            echo "Problèmes trouvés: $ISSUES" >> reports/workflow-analysis.md
-            echo "Optimisations possibles: $OPTIMIZATIONS" >> reports/workflow-analysis.md
-            echo "" >> reports/workflow-analysis.md
+            TOTAL_ISSUES=$((TOTAL_ISSUES + ISSUES))
+            TOTAL_WARNINGS=$((TOTAL_WARNINGS + WARNINGS))
+            TOTAL_SECURITY_ISSUES=$((TOTAL_SECURITY_ISSUES + SECURITY_ISSUES))
+            TOTAL_OPTIMIZATIONS=$((TOTAL_OPTIMIZATIONS + OPTIMIZATIONS))
+            
+            if [ "$STATUS" = "error" ]; then
+              MESSAGE=$(jq -r '.message // "Erreur inconnue"' "reports/$workflow.json")
+              echo "⚠️ **Erreur:** $MESSAGE" >> reports/workflow-analysis.md
+              echo "" >> reports/workflow-analysis.md
+            else
+              echo "Statut: $STATUS" >> reports/workflow-analysis.md
+              echo "Problèmes critiques: $ISSUES" >> reports/workflow-analysis.md
+              echo "Avertissements: $WARNINGS" >> reports/workflow-analysis.md
+              echo "Problèmes de sécurité: $SECURITY_ISSUES" >> reports/workflow-analysis.md
+              echo "Optimisations possibles: $OPTIMIZATIONS" >> reports/workflow-analysis.md
+              echo "" >> reports/workflow-analysis.md
+            fi
             
             # Lister les problèmes
             if [ "$ISSUES" -gt 0 ]; then
-              echo "#### Problèmes détectés:" >> reports/workflow-analysis.md
+              echo "#### Problèmes critiques" >> reports/workflow-analysis.md
               echo "" >> reports/workflow-analysis.md
-              jq -r '.issues[]' reports/$workflow.json | while read -r issue; do
-                echo "- $issue" >> reports/workflow-analysis.md
+              jq -r '.issues[]' "reports/$workflow.json" | while read -r issue; do
+                echo "- ❌ $issue" >> reports/workflow-analysis.md
+              done
+              echo "" >> reports/workflow-analysis.md
+            fi
+            
+            # Lister les avertissements
+            if [ "$WARNINGS" -gt 0 ]; then
+              echo "#### Avertissements" >> reports/workflow-analysis.md
+              echo "" >> reports/workflow-analysis.md
+              jq -r '.warnings[]' "reports/$workflow.json" | while read -r warning; do
+                echo "- ⚠️ $warning" >> reports/workflow-analysis.md
+              done
+              echo "" >> reports/workflow-analysis.md
+            fi
+            
+            # Lister les problèmes de sécurité
+            if [ "$SECURITY_ISSUES" -gt 0 ]; then
+              echo "#### Problèmes de sécurité" >> reports/workflow-analysis.md
+              echo "" >> reports/workflow-analysis.md
+              jq -r '.security_issues[]' "reports/$workflow.json" | while read -r security_issue; do
+                echo "- 🔒 $security_issue" >> reports/workflow-analysis.md
               done
               echo "" >> reports/workflow-analysis.md
             fi
             
             # Lister les optimisations
             if [ "$OPTIMIZATIONS" -gt 0 ]; then
-              echo "#### Optimisations recommandées:" >> reports/workflow-analysis.md
+              echo "#### Optimisations recommandées" >> reports/workflow-analysis.md
               echo "" >> reports/workflow-analysis.md
-              jq -r '.optimizations[] | .description' reports/$workflow.json | while read -r opt; do
-                echo "- $opt" >> reports/workflow-analysis.md
+              jq -r '.optimizations[] | .description' "reports/$workflow.json" | while read -r opt; do
+                echo "- 🔧 $opt" >> reports/workflow-analysis.md
               done
               echo "" >> reports/workflow-analysis.md
             fi
             
-            # Déterminer si des corrections doivent être appliquées
-            if [ "$AUTO_FIX" = "true" ] && [ "$OPTIMIZATIONS" -gt 0 ]; then
-              echo "Application des corrections pour $workflow..."
-              python .github/optimizer/analyze_workflow.py "$workflow_path" --apply > reports/$workflow-fixed.json
-              
-              # Vérifier si les corrections ont été appliquées
-              FIXES_APPLIED=$(jq -r '.fixes_applied // false' reports/$workflow-fixed.json)
+            # Vérifier si des corrections ont été appliquées
+            if [ "$AUTO_FIX" = "true" ]; then
+              FIXES_APPLIED=$(jq -r '.fixes_applied // false' "reports/$workflow.json")
               if [ "$FIXES_APPLIED" = "true" ]; then
-                echo "✅ Corrections appliquées automatiquement pour $workflow" >> reports/workflow-analysis.md
+                APPLIED_FIXES=$(jq -r '.applied_fixes | length // 0' "reports/$workflow.json")
+                TOTAL_APPLIED_FIXES=$((TOTAL_APPLIED_FIXES + APPLIED_FIXES))
+                
+                echo "#### Corrections appliquées ✅" >> reports/workflow-analysis.md
+                echo "" >> reports/workflow-analysis.md
+                jq -r '.applied_fixes[]' "reports/$workflow.json" | while read -r fix; do
+                  echo "- $fix" >> reports/workflow-analysis.md
+                done
                 echo "" >> reports/workflow-analysis.md
               else
-                echo "⚠️ Impossible d'appliquer certaines corrections pour $workflow" >> reports/workflow-analysis.md
+                echo "❗ Aucune correction n'a pu être appliquée automatiquement." >> reports/workflow-analysis.md
                 echo "" >> reports/workflow-analysis.md
               fi
             fi
@@ -371,53 +804,88 @@ EOF
           
           # Créer un résumé
           TOTAL_WORKFLOWS=$(wc -l < .github/optimizer/workflows.txt)
-          TOTAL_ISSUES=$(jq -s 'map(.issues | length) | add // 0' reports/*.json)
-          TOTAL_OPTIMIZATIONS=$(jq -s 'map(.optimizations | length) | add // 0' reports/*.json)
           
           echo "## Résumé" > reports/workflow-summary.md
           echo "" >> reports/workflow-summary.md
           echo "- Workflows analysés: $TOTAL_WORKFLOWS" >> reports/workflow-summary.md
-          echo "- Problèmes détectés: $TOTAL_ISSUES" >> reports/workflow-summary.md
+          echo "- Problèmes critiques détectés: $TOTAL_ISSUES" >> reports/workflow-summary.md
+          echo "- Avertissements: $TOTAL_WARNINGS" >> reports/workflow-summary.md
+          echo "- Problèmes de sécurité: $TOTAL_SECURITY_ISSUES" >> reports/workflow-summary.md
           echo "- Optimisations possibles: $TOTAL_OPTIMIZATIONS" >> reports/workflow-summary.md
+          
+          if [ "$AUTO_FIX" = "true" ]; then
+            echo "- Corrections appliquées: $TOTAL_APPLIED_FIXES" >> reports/workflow-summary.md
+          fi
+          
           echo "" >> reports/workflow-summary.md
           
+          # Générer le rapport final
           cat reports/workflow-summary.md reports/workflow-analysis.md > reports/final-report.md
           
           # Définir l'output pour les étapes suivantes
-          echo "::set-output name=total_issues::$TOTAL_ISSUES"
-          echo "::set-output name=total_optimizations::$TOTAL_OPTIMIZATIONS"
-          echo "::set-output name=fixes_applied::$AUTO_FIX"
+          {
+            echo "total_issues=$TOTAL_ISSUES"
+            echo "total_warnings=$TOTAL_WARNINGS"
+            echo "total_security_issues=$TOTAL_SECURITY_ISSUES"
+            echo "total_optimizations=$TOTAL_OPTIMIZATIONS"
+            echo "total_applied_fixes=$TOTAL_APPLIED_FIXES"
+            echo "fixes_applied=$AUTO_FIX"
+          } >> $GITHUB_OUTPUT
+      
+      - name: Création d'une branche pour les corrections
+        if: |
+          steps.analysis.outputs.total_optimizations > 0 && 
+          env.AUTO_FIX == 'true' && 
+          steps.analysis.outputs.total_applied_fixes > 0
+        id: create-branch
+        run: |
+          set -euo pipefail
+          
+          BRANCH_NAME="${BRANCH_NAME}"
+          git config --global user.name "Workflow Optimizer Bot"
+          git config --global user.email "bot@example.com"
+          
+          git checkout -b "$BRANCH_NAME" || git checkout "$BRANCH_NAME"
+          
+          # Vérifier s'il y a des changements à commiter
+          if git status --porcelain | grep -q '.github/workflows/'; then
+            git add .github/workflows/
+            git commit -m "🔧 Optimisation automatique des workflows CI/CD
+
+Cette Pull Request contient des optimisations automatiques pour les workflows GitHub Actions.
+
+Nombre d'optimisations appliquées: ${{ steps.analysis.outputs.total_applied_fixes }}
+
+_Généré automatiquement par Workflow Optimizer_"
+            
+            git push origin "$BRANCH_NAME"
+            echo "branch_pushed=true" >> $GITHUB_OUTPUT
+          else
+            echo "Aucun changement à commiter."
+            echo "branch_pushed=false" >> $GITHUB_OUTPUT
+          fi
       
       - name: Création d'une Pull Request pour les corrections
-        if: steps.analysis.outputs.total_optimizations > 0 && env.AUTO_FIX == 'true'
+        if: |
+          steps.analysis.outputs.total_optimizations > 0 && 
+          env.AUTO_FIX == 'true' && 
+          steps.analysis.outputs.total_applied_fixes > 0 &&
+          steps.create-branch.outputs.branch_pushed == 'true'
         run: |
-          # Créer une branche pour les modifications
-          BRANCH_NAME="workflow-optimizer-$(date +%Y%m%d%H%M%S)"
-          git config --global user.name "Workflow Optimizer Bot"
-          git config --global user.email "robot@example.com"
-          
-          git checkout -b $BRANCH_NAME
-          git add .github/workflows/
-          git commit -m "🔧 Optimisation automatique des workflows CI/CD
-
-          Cette Pull Request contient des optimisations automatiques pour les workflows GitHub Actions.
-          
-          Nombre d'optimisations appliquées: ${{ steps.analysis.outputs.total_optimizations }}
-          
-          _Généré automatiquement par Workflow Optimizer_"
-          
-          git push origin $BRANCH_NAME
+          set -euo pipefail
           
           # Créer la Pull Request
-          gh pr create --title "🔧 Optimisation automatique des workflows CI/CD" \
-                      --body "## 🤖 Optimisations Automatiques
+          PR_URL=$(gh pr create --title "🔧 Optimisation automatique des workflows CI/CD" \
+                              --body "## 🤖 Optimisations Automatiques
           
           Cette Pull Request contient des optimisations automatiques pour les workflows GitHub Actions, générées par le Workflow Optimizer.
           
           ### 📊 Statistiques
-          - Workflows analysés: $TOTAL_WORKFLOWS
-          - Problèmes détectés: ${{ steps.analysis.outputs.total_issues }}
-          - Optimisations appliquées: ${{ steps.analysis.outputs.total_optimizations }}
+          - Workflows analysés: ${{ steps.inventory.outputs.workflow_count }}
+          - Problèmes critiques détectés: ${{ steps.analysis.outputs.total_issues }}
+          - Problèmes de sécurité détectés: ${{ steps.analysis.outputs.total_security_issues }}
+          - Avertissements: ${{ steps.analysis.outputs.total_warnings }}
+          - Optimisations appliquées: ${{ steps.analysis.outputs.total_applied_fixes }}
           
           ### 📝 Rapport détaillé
           $(cat reports/workflow-analysis.md)
@@ -425,11 +893,22 @@ EOF
           ---
           
           ⚙️ Généré automatiquement par [Workflow Optimizer](.github/workflows/workflow-optimizer.yml)" \
-                      --label "automation,optimization,ci-cd"
+                              --label "automation,optimization,ci-cd" \
+                              --base "main" \
+                              --head "$BRANCH_NAME")
+          
+          echo "Pull Request créée: $PR_URL"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Création d'une issue pour les optimisations suggérées
-        if: steps.analysis.outputs.total_optimizations > 0 && env.AUTO_FIX == 'false'
+        if: |
+          steps.analysis.outputs.total_optimizations > 0 && 
+          env.AUTO_FIX == 'false' &&
+          env.WORKFLOWS_FOUND == 'true'
         run: |
+          set -euo pipefail
+          
           # Créer une issue avec les recommandations
           gh issue create --title "📊 Recommandations d'optimisation des workflows CI/CD" \
                          --body "## 🤖 Recommandations d'Optimisation
@@ -437,8 +916,10 @@ EOF
           Le Workflow Optimizer a analysé les workflows GitHub Actions et détecté plusieurs optimisations possibles.
           
           ### 📊 Statistiques
-          - Workflows analysés: $TOTAL_WORKFLOWS
-          - Problèmes détectés: ${{ steps.analysis.outputs.total_issues }}
+          - Workflows analysés: ${{ steps.inventory.outputs.workflow_count }}
+          - Problèmes critiques détectés: ${{ steps.analysis.outputs.total_issues }}
+          - Problèmes de sécurité détectés: ${{ steps.analysis.outputs.total_security_issues }}
+          - Avertissements: ${{ steps.analysis.outputs.total_warnings }}
           - Optimisations possibles: ${{ steps.analysis.outputs.total_optimizations }}
           
           ### 📝 Rapport détaillé
@@ -450,12 +931,51 @@ EOF
           
           ⚙️ Généré automatiquement par [Workflow Optimizer](.github/workflows/workflow-optimizer.yml)" \
                          --label "automation,optimization,ci-cd" \
-                         --assignee Casius999
+                         --assignee ${{ github.repository_owner }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Téléchargement des rapports
         if: always() && env.WORKFLOWS_FOUND == 'true'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: workflow-optimizer-reports
           path: reports/
           retention-days: 90
+      
+      - name: Résumé des résultats
+        if: always()
+        run: |
+          set -euo pipefail
+          
+          echo "## Résultats de l'analyse des workflows" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$WORKFLOWS_FOUND" = "true" ]; then
+            echo "### Statistiques" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Workflows analysés: ${{ steps.inventory.outputs.workflow_count }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Problèmes critiques: ${{ steps.analysis.outputs.total_issues || 0 }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Problèmes de sécurité: ${{ steps.analysis.outputs.total_security_issues || 0 }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Avertissements: ${{ steps.analysis.outputs.total_warnings || 0 }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Optimisations possibles: ${{ steps.analysis.outputs.total_optimizations || 0 }}" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$AUTO_FIX" = "true" ]; then
+              echo "- Corrections appliquées: ${{ steps.analysis.outputs.total_applied_fixes || 0 }}" >> $GITHUB_STEP_SUMMARY
+              
+              if [ "${{ steps.create-branch.outputs.branch_pushed || 'false' }}" = "true" ]; then
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "📌 **Une Pull Request a été créée avec les optimisations**" >> $GITHUB_STEP_SUMMARY
+              fi
+            else
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "📌 **Une Issue a été créée avec les recommandations d'optimisation**" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ **Aucun workflow valide trouvé pour l'analyse**" >> $GITHUB_STEP_SUMMARY
+            
+            if [ ! -d ".github/workflows" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Le répertoire .github/workflows n'existe pas." >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
