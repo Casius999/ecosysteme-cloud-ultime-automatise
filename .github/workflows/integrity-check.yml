@@ -15,20 +15,33 @@ on:
         required: false
         default: 'Vérification périodique'
 
+# Définition de la concurrence pour éviter les exécutions parallèles inutiles
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Définition des permissions minimales requises
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
 jobs:
   integrity_check:
     name: Vérification d'Intégrité
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout du code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Configuration de Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
+          cache: 'pip'
 
       - name: Installation des dépendances
         run: |
@@ -44,13 +57,14 @@ jobs:
       - name: Vérification de la charte d'intégrité
         id: charter_check
         run: |
+          set -euo pipefail
+          
           if [ ! -f "INTEGRITY_CHARTER.md" ]; then
             echo "❌ ERREUR: La Charte d'Intégrité Systémique est manquante!"
             exit 1
           else
             echo "✅ Charte d'Intégrité Systémique trouvée."
-            grep -q "VÉRACITÉ TOTALE" INTEGRITY_CHARTER.md
-            if [ $? -ne 0 ]; then
+            if ! grep -q "VÉRACITÉ TOTALE" INTEGRITY_CHARTER.md; then
               echo "⚠️ ATTENTION: La Charte d'Intégrité ne contient pas les principes essentiels."
               exit 1
             else
@@ -60,6 +74,8 @@ jobs:
 
       - name: Vérification des scripts essentiels
         run: |
+          set -euo pipefail
+          
           echo "Vérification des scripts essentiels..."
           
           # Vérification du script d'intégrité
@@ -104,6 +120,8 @@ EOF
             echo "⚠️ ATTENTION: Script de déploiement d'infrastructure manquant. Création d'un script minimal..."
             cat > scripts/deploy_infrastructure.sh << 'EOF'
 #!/bin/bash
+set -euo pipefail
+
 echo "Déploiement de l'infrastructure..."
 # Script minimal pour valider l'intégrité
 exit 0
@@ -115,6 +133,8 @@ EOF
 
       - name: Vérification de Terraform
         run: |
+          set -euo pipefail
+          
           echo "Vérification de la configuration Terraform..."
           
           # Vérification des fichiers Terraform essentiels
@@ -122,7 +142,7 @@ EOF
             echo "⚠️ ATTENTION: Fichier main.tf manquant. Création d'un fichier minimal..."
             cat > terraform/main.tf << 'EOF'
 terraform {
-  required_version = ">= 1.0.0"
+  required_version = ">= 1.5.0"
   backend "local" {}
 }
 
@@ -183,6 +203,8 @@ EOF
 
       - name: Vérification des applications essentielles
         run: |
+          set -euo pipefail
+          
           echo "Vérification des applications essentielles..."
           
           # Vérification de l'agent de fallback
@@ -216,18 +238,25 @@ EOF
           fi
 
       - name: Exécution du script de vérification d'intégrité
+        id: integrity_verification
         run: |
+          set -euo pipefail
+          
           echo "Exécution de la vérification d'intégrité..."
           python scripts/verify_integrity.py
           if [ $? -ne 0 ]; then
             echo "❌ La vérification d'intégrité a échoué!"
+            echo "verification_status=failed" >> $GITHUB_OUTPUT
             exit 1
           else
             echo "✅ Vérification d'intégrité réussie!"
+            echo "verification_status=success" >> $GITHUB_OUTPUT
           fi
 
       - name: Vérification des simulateurs fictifs
         run: |
+          set -euo pipefail
+          
           echo "Vérification de l'absence de simulations fictives..."
           
           # Recherche de termes liés aux simulations fictives
@@ -242,6 +271,8 @@ EOF
 
       - name: Génération du rapport d'intégrité
         run: |
+          set -euo pipefail
+          
           echo "Génération du rapport d'intégrité..."
           
           mkdir -p reports
@@ -275,8 +306,16 @@ EOF
           echo "Rapport généré: reports/integrity_report.md"
 
       - name: Upload du rapport
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: integrity-report
           path: reports/
           retention-days: 90
+
+      - name: Enregistrement des résultats de sécurité
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/integrity-scan.sarif
+          category: integrity-verification
+        continue-on-error: true
