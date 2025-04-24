@@ -16,6 +16,16 @@ on:
         required: false
         default: 'Vérification périodique'
 
+# Définition de la concurrence pour éviter les exécutions parallèles inutiles
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Définition des permissions minimales requises
+permissions:
+  contents: read
+  issues: write # Pour créer des issues en cas d'erreurs
+
 jobs:
   actionlint:
     name: Actionlint
@@ -23,44 +33,101 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout du code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
         
       - name: Installation d'Actionlint
         run: |
-          # Méthode d'installation plus fiable
+          # Méthode d'installation plus robuste avec vérification
           mkdir -p $HOME/bin
-          curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+          
+          # Téléchargement de la dernière version via GitHub API
+          LATEST_VERSION=$(curl -s https://api.github.com/repos/rhysd/actionlint/releases/latest | jq -r '.tag_name')
+          echo "Installation d'Actionlint version ${LATEST_VERSION}"
+          
+          # Détection de l'architecture
+          ARCH=$(uname -m)
+          case "${ARCH}" in
+            x86_64)
+              BINARY_ARCH="amd64"
+              ;;
+            aarch64|arm64)
+              BINARY_ARCH="arm64"
+              ;;
+            *)
+              echo "Architecture non supportée: ${ARCH}"
+              exit 1
+              ;;
+          esac
+          
+          # Téléchargement et installation avec vérification
+          DOWNLOAD_URL="https://github.com/rhysd/actionlint/releases/download/${LATEST_VERSION}/actionlint_${LATEST_VERSION:1}_linux_${BINARY_ARCH}.tar.gz"
+          echo "Téléchargement depuis ${DOWNLOAD_URL}"
+          
+          curl -sSL "${DOWNLOAD_URL}" | tar xz -C $HOME/bin actionlint
+          chmod +x $HOME/bin/actionlint
+          
           echo "$HOME/bin" >> $GITHUB_PATH
+          echo "Installation terminée"
+          
+          # Vérification de l'installation
+          if ! command -v actionlint &> /dev/null; then
+            echo "Erreur: actionlint n'a pas été installé correctement"
+            exit 1
+          fi
+          
+          actionlint --version
         
       - name: Vérification des workflows avec Actionlint
         id: actionlint
         run: |
+          set -euo pipefail
+          
           mkdir -p reports
           echo "Exécution d'actionlint sur les workflows..."
           
-          # Exécution d'actionlint avec formatage pour GitHub Actions
-          actionlint -color -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Message}}%0A```%0A{{$err.Snippet}}%0A```%0A{{end}}' > reports/actionlint-report.txt
+          # Exécution d'actionlint avec format JSON pour meilleure compatibilité
+          actionlint -color -format json > reports/actionlint-output.json || true
           
-          # Vérification du résultat
-          if [ -s reports/actionlint-report.txt ]; then
+          # Extraction et formatage des erreurs pour GitHub Actions
+          if [ -s reports/actionlint-output.json ]; then
+            cat reports/actionlint-output.json | jq -r '.[] | "::error file=\(.filepath),line=\(.line),col=\(.column)::\(.message)%0A```%0A\(.snippet)%0A```%0A"'
             echo "has_errors=true" >> $GITHUB_OUTPUT
             echo "Des erreurs ont été détectées dans les workflows."
-            cat reports/actionlint-report.txt
+            
+            # Compter le nombre d'erreurs pour le rapport
+            ERROR_COUNT=$(jq -r 'length' reports/actionlint-output.json)
+            echo "error_count=${ERROR_COUNT}" >> $GITHUB_OUTPUT
           else
             echo "has_errors=false" >> $GITHUB_OUTPUT
+            echo "error_count=0" >> $GITHUB_OUTPUT
             echo "Aucune erreur détectée dans les workflows."
           fi
 
-      - name: Enregistrement des problèmes détectés
+      - name: Extraction des erreurs pour création du rapport
         if: steps.actionlint.outputs.has_errors == 'true'
+        id: extract_errors
         run: |
+          set -euo pipefail
+          
           echo "## Problèmes détectés dans les workflows GitHub Actions" > reports/actionlint-summary.md
           echo "" >> reports/actionlint-summary.md
           echo "Des problèmes ont été détectés dans les workflows GitHub Actions. Veuillez corriger les erreurs suivantes:" >> reports/actionlint-summary.md
           echo "" >> reports/actionlint-summary.md
-          cat reports/actionlint-report.txt >> reports/actionlint-summary.md
+          
+          # Formatage plus lisible des erreurs pour le rapport
+          jq -r '.[] | "### Erreur dans \(.filepath) (ligne \(.line), colonne \(.column))\n\n**Message**: \(.message)\n\n```yaml\n\(.snippet)\n```\n"' reports/actionlint-output.json >> reports/actionlint-summary.md
+          
+          # Ajout de recommandations pour résoudre les problèmes communs
+          echo "## Recommandations générales" >> reports/actionlint-summary.md
+          echo "" >> reports/actionlint-summary.md
+          echo "- Assurez-vous d'utiliser les versions les plus récentes des actions" >> reports/actionlint-summary.md
+          echo "- Remplacez `::set-output name=` par `echo \"name=value\" >> \$GITHUB_OUTPUT`" >> reports/actionlint-summary.md
+          echo "- Remplacez `::save-state name=` par `echo \"name=value\" >> \$GITHUB_STATE`" >> reports/actionlint-summary.md
+          echo "- Remplacez `::add-path:` par `echo \"value\" >> \$GITHUB_PATH`" >> reports/actionlint-summary.md
+          echo "- Définissez des permissions explicites pour chaque workflow" >> reports/actionlint-summary.md
+          echo "" >> reports/actionlint-summary.md
           
           # Afficher le rapport dans les logs
           echo "Rapport détaillé des problèmes:"
@@ -73,11 +140,27 @@ jobs:
           title: "⚠️ Problèmes détectés dans les workflows GitHub Actions"
           content-filepath: reports/actionlint-summary.md
           labels: bug, automation, workflow, ci-cd
-          assignees: Casius999
+          assignees: ${{ github.repository_owner }}
 
       - name: Téléchargement du rapport
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: actionlint-report
           path: reports/
           retention-days: 30
+          
+      - name: Résumé des résultats
+        run: |
+          echo "## Résultats de l'analyse Actionlint" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.actionlint.outputs.has_errors }}" == "true" ]; then
+            echo "❌ **${{ steps.actionlint.outputs.error_count }} erreurs détectées**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Consultez l'artefact 'actionlint-report' pour plus de détails" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Une issue a été créée pour suivre ces erreurs." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Aucune erreur détectée**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Tous les workflows sont conformes aux bonnes pratiques!" >> $GITHUB_STEP_SUMMARY
+          fi
